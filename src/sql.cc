@@ -46,9 +46,6 @@
 #ifdef POSTGRESQL_FOUND
 #   include <pqxx/pqxx>
 #endif
-#ifdef SQLITE3_FOUND
-#   include <sqlite3.h>
-#endif
 #ifdef MYSQL_FOUND
 #   include <mysql/mysql.h>
 #endif
@@ -196,6 +193,7 @@ class SQLSession {
             unsigned char options = 0)      = 0;
         virtual void shutdown()             = 0;
         virtual bool is_healthy()           = 0;
+        virtual void set_broken_connection_true() = 0;
         void wait() {
             std::unique_lock<std::mutex> lock(busy_mutex);
         }
@@ -215,31 +213,50 @@ class SQLSessionPool {
 
         SQLSession* get_connection() {
             std::unique_lock<std::mutex> lock(connections_mutex);
+            oklog("in SQLSessionPool get_connection\n");
             auto connection = this->get_or_create_connection();
+            oklog("done calling get_or_create_connection\n");
             
             if (connection == nullptr) {
+                oklog("returning connection\n");
                 return connection;
             }
 
+            oklog("setting connection busy");
             set_connection_busy(connection);
+            oklog("returning connection");
             return connection;
         }
 
         void release_connection(SQLSession* session) {
+            oklog("in release connection\n");
             std::unique_lock<std::mutex> lock(connections_mutex);
 
+            oklog("release connection: post mutex relesae\n");
             // We're over connection cap, release to get back to cap.
+            oklog("SQL_SOFT_MAX_CONNECTIONS: %d \n", SQL_SOFT_MAX_CONNECTIONS);
+            oklog("calling session->is_healthy\n");
+            try {
+                session->is_healthy();
+            }
+            catch (...) {
+                oklog("an exception occured and was caught.\n");
+            }
+            oklog("done calling is_healthy before if");
             if (size() > SQL_SOFT_MAX_CONNECTIONS || !session->is_healthy()) {
+                oklog("in release connection: inside if statement, calling expire_connection()");
                 expire_connection(session);
                 oklog("  found unhealthy connection\n");
                 return;
             }
-
+            oklog("release connection: about to set connection idle\n");
             // Normal release, bring back to idle pool.
             set_connection_idle(session);
+            oklog("release connection: done setting connection idle; done in release connection\n");
         }
 
         void expire_connection(SQLSession* session) {
+            oklog("in expire_connection\n");
             if (auto it = connections_busy.find(session); it != connections_busy.end()) {
                 it->second->wait();
                 it->second->shutdown();
@@ -255,6 +272,7 @@ class SQLSessionPool {
         }
 
         void stop() {
+            oklog("in stop\n");
             std::unique_lock<std::mutex> lock(connections_mutex);            
             for (auto&& connection : connections_idle) {
                 connection.second->shutdown();
@@ -270,14 +288,21 @@ class SQLSessionPool {
         }
 
         std::size_t size() const {
+            oklog("inside size1\n");
+            size_idle() + size_busy();
+            oklog("finished size_idle() and size_busy() initial calls\n");
             return size_idle() + size_busy();
         }
 
         std::size_t size_idle() const {
+            oklog("inside size_idle()\n");
             return connections_idle.size();
         }
         
         std::size_t size_busy() const {
+            oklog("inside size_busy\n");
+            connections_busy.size();
+            oklog("finished calling initial check in size_busy\n");
             return connections_busy.size();
         }
 
@@ -289,6 +314,7 @@ class SQLSessionPool {
         virtual std::unique_ptr<SQLSession> create_connection() = 0;
 
         SQLSession* get_or_create_connection() {
+            oklog("in get_or_create_connection1\n");
             for (auto&& item : this->connections_idle) {
                 if (!item.first->is_healthy()) {
                     oklog("  expiring unhealthy connection\n");
@@ -300,8 +326,11 @@ class SQLSessionPool {
 
             oklog("  creating new connection\n");
             auto connection = create_connection();
+            oklog(" done creating connection\n");
             auto result = connection.get();
+            oklog(" setting result\n");
             connections_idle[result] = std::move(connection);
+            oklog(" finished setting result, returning result\n");
             return result;
         }
 
@@ -329,8 +358,10 @@ class SQLSessionPool {
 class PostgreSQLSession: public SQLSession {
     public:
         PostgreSQLSession(Uri* uri) {
+            oklog("in the PostgresSQLSessoin constructor\n");
             connection_string = uri->full_string;    
             connection = std::make_unique<pqxx::connection>(connection_string);
+            oklog("postgressqlsession constructor, finished.\n");
         }
 
         void query(std::string statement, Var* bind, Var* ret, unsigned char options = 0) {
@@ -406,7 +437,16 @@ class PostgreSQLSession: public SQLSession {
         }
 
         bool is_healthy() {
+            oklog("inside is_healthy\n");
+            this->broken_connection;
+            oklog("done calling broken_connection\n");
+            connection->is_open();
+            oklog("done calling connection->is_open\n");
             return !this->broken_connection && connection->is_open();
+        }
+
+        void set_broken_connection_true() {
+            this->broken_connection = true;
         }
 
     private:
@@ -420,121 +460,11 @@ class PostgreSQLSessionPool: public SQLSessionPool {
         PostgreSQLSessionPool(std::unique_ptr<Uri> uri) : SQLSessionPool(std::move(uri)) { }
     protected:
         std::unique_ptr<SQLSession> create_connection() {
+            oklog("in PostgresSQLSessionPool create_connection\n");
             return std::make_unique<PostgreSQLSession>(connection_uri.get());
         }
 };
 #endif // POSTGRESQL_FOUND
-
-#ifdef SQLITE3_FOUND
-class SQLiteSession: public SQLSession {
-    public:
-        SQLiteSession(Uri* uri) {
-            auto return_code = sqlite3_open(uri->host.c_str(), &db);            
-            if (return_code != SQLITE_OK) {
-                throw std::runtime_error("Cannot open database: " + uri->host);
-            }
-        }
-    
-        void query(std::string statement, Var* bind, Var* ret, unsigned char options = 0) {
-            std::unique_lock<std::mutex> lock(busy_mutex);
-
-            // Create the statement.
-            sqlite3_stmt *res;
-            auto return_code = sqlite3_prepare_v2(db, statement.c_str(), -1, &res, nullptr);
-
-            if (return_code != SQLITE_OK) {
-                char *errstr = (char*)sqlite3_errmsg(db);
-                sqlite3_finalize(res);
-                throw std::runtime_error(errstr);
-            }
-
-            // Code for binding prepared statements.
-            if (bind != nullptr) {
-                for (int bind_col=1; bind_col <= bind->v.num; bind_col++) {
-                    switch (bind[bind_col].type) {
-                        case TYPE_STR:
-                            return_code = sqlite3_bind_text(res, bind_col, bind[bind_col].v.str, -1, 0);
-                            break;
-                        case TYPE_INT:
-                        case TYPE_NUMERIC:
-                            return_code = sqlite3_bind_int(res, bind_col, bind[bind_col].v.num);
-                            break;
-                        case TYPE_FLOAT:
-                            return_code = sqlite3_bind_double(res, bind_col, bind[bind_col].v.fnum);
-                            break;
-                        case TYPE_BOOL:
-                            return_code = sqlite3_bind_int(res, bind_col, bind[bind_col].v.truth);
-                            break;
-                    }
-
-                    if (return_code == SQLITE_RANGE) {
-                        sqlite3_finalize(res);
-                        throw std::runtime_error("Parameter index out of range.");
-                    } else if (return_code != SQLITE_OK) {
-                        sqlite3_finalize(res);
-                        throw std::runtime_error("Error when binding argument to query.");
-                    }
-                }
-            }
-
-            // Actually parsing the results.
-            int column_count = 0;
-            *ret = new_list(0);
-            while((return_code = sqlite3_step(res)) == SQLITE_ROW) {
-                int column_count = sqlite3_data_count(res);
-                if (column_count <= 0) {
-                  continue;
-                }
-
-                Var row = new_list(0);
-                for (int i=0;i < column_count;i++) {
-                    char *str = (char*)sqlite3_column_text(res, i);
-
-                    Var column;
-                    if (!(options & SQL_PARSE_TYPES)) {
-                        if (options & SQL_SANITIZE_STRINGS)
-                            sanitize_string_for_moo(str);
-                        column.type = TYPE_STR;
-                        column.v.str = str_dup(str);
-                    } else {
-                        column = string_to_moo_type(str, options & SQL_PARSE_OBJECTS, options & SQL_SANITIZE_STRINGS);
-                    }
-
-                    row = listappend(row, column);
-                }
-
-                *ret = listappend(*ret, row);
-            }
-
-            if (return_code != SQLITE_DONE) {
-                char *errstr = (char*)sqlite3_errmsg(db);
-                *ret = str_dup_to_var(errstr);
-            }
-
-            sqlite3_finalize(res);
-        }
-
-        void shutdown() {
-            sqlite3_close(db);
-        }
-
-        bool is_healthy() {
-            return true;
-        }
-
-    private:
-        sqlite3 *db;
-};
-
-class SQLiteSessionPool: public SQLSessionPool {
-    public:
-        SQLiteSessionPool(std::unique_ptr<Uri> uri) : SQLSessionPool(std::move(uri)) { }
-    protected:
-        std::unique_ptr<SQLSession> create_connection() {
-            return std::make_unique<SQLiteSession>(connection_uri.get());
-        }
-};
-#endif // SQLITE3_FOUND
 
 static std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>> connection_pools;
 
@@ -569,11 +499,6 @@ static SQLSessionPool* create_session_pool(std::string connection_string, unsign
 #ifdef POSTGRESQL_FOUND
     if (!pool && (uri->scheme == "postgresql" || uri->scheme == "postgres")) {
         pool = std::make_unique<PostgreSQLSessionPool>(std::move(uri));
-    }
-#endif
-#ifdef SQLITE3_FOUND
-    if (!pool && (uri->scheme == "sqlite")) {
-        pool = std::make_unique<SQLiteSessionPool>(std::move(uri));
     }
 #endif
 
@@ -625,34 +550,53 @@ query_callback(const Var arglist, Var *ret)
         while (tries < 3) {
             tries++;
             try {
-            session = pool->get_connection();
-            if (nargs < 3 || arglist.v.list[3].v.num < 1) {
-                // There's no SQL parameters.
-                session->query(query, nullptr, ret);
-            } else {
-                // Parameterize the SQL
-                session->query(query, arglist.v.list[3].v.list, ret);
-            }
-            // We're done with the connection, let it go back to the pool.
-            pool->release_connection(session);
-            break;
+                session = pool->get_connection();
+                if (nargs < 3 || arglist.v.list[3].v.num < 1) {
+                    // There's no SQL parameters.
+                    session->query(query, nullptr, ret);
+                } else {
+                    // Parameterize the SQL
+                    session->query(query, arglist.v.list[3].v.list, ret);
+                }
+                // We're done with the connection, let it go back to the pool.
+                oklog("calling release connection 1\n");
+                pool->release_connection(session);
+                break;
             } catch (pqxx::sql_error) {
-                oklog("pqxx exception caught");
+                oklog("pqxx exception caught \n");
+                throw;
+            } catch (pqxx::broken_connection) {
+                oklog("pqxx broken connection caught \n");
                 throw;
             } catch (const std::runtime_error& re) {
+                oklog("runtime error detected 1\n");
                 if (tries >= 3) {
                     throw;
                 }
-                // We're done with the connection, let it go back to the pool.
-                pool->release_connection(session);
+                oklog("checking if session is nullptr\n");
+                if (session == nullptr) {
+                    oklog("session is nullptr. doing nothing.");
+                } else {
+                    // We're done with the connection, let it go back to the pool.
+                    oklog("calling release connection again 1\n");
+                    pool->release_connection(session);
+                    oklog("finished calling release_connection\n");
+                }
             } 
         }        
+    } catch (const pqxx::broken_connection& re) {
+        oklog("catching pqxx broken_connection");
+        auto err = (char*)re.what();
+        sanitize_string_for_moo(err);
+        *ret = str_dup_to_var(err);
     } catch (const std::runtime_error& re) {
+        oklog("catching error 1\n");
         auto err = (char*)re.what();
         sanitize_string_for_moo(err);
         *ret = str_dup_to_var(err);
         pool->release_connection(session);
     } catch(...) {
+        oklog("catching error 2\n");
         *ret = str_dup_to_var("Unknown failure encountered.");
         pool->release_connection(session);
     }
@@ -782,10 +726,12 @@ bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
         ret.v.num = 1;
         return make_var_pack(ret);
     } catch (const std::exception &e) {
+        oklog("SQL ERROR #1\n");
         free_var(arglist);
         free_var(ret);
         return make_raise_pack(E_INVARG, e.what(), zero);
     } catch (...) {
+        oklog("SQL ERROR #2\n");
         free_var(arglist);
         free_var(ret);
         return make_raise_pack(E_INVARG, "An unknown error has occurred.", zero);
@@ -825,9 +771,6 @@ void register_sql(void)
     oklog("REGISTER_SQL: SQL features are online and enabled!\n");
 #ifdef POSTGRESQL_FOUND
     oklog("  POSTGRESQL_OK: PostgreSQL database feature is enabled.\n");
-#endif
-#ifdef SQLITE3_FOUND
-    oklog("  SQLITE3_OK: SQLite v3 database feature is enabled.\n");
 #endif
 
     register_function("sql_query", 2, 3, bf_sql_query, TYPE_INT, TYPE_STR, TYPE_LIST);

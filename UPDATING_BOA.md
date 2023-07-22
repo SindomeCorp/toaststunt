@@ -35,12 +35,14 @@ rsync -ravz -e "ssh -i slither.pem" /Users/sindome/Servers/sindome-moo/files ubu
 ;for p in ($ou:descendents(#131)) if (!$wiz_utils:is_admin(p)) clear_property(p, "password"); endif endfor
 
 ## stop slack trying to send
-@program $browser:_post and make it return at top
 
 ## unschedule some stuff
 ;$scheduler:remove_scheduled(#18056, "pull_unread_gridmail")
 ;$scheduler:remove_scheduled(#24, "get_blocked_proxy_ips")
 ;$scheduler:remove_scheduled(#61180, "attention_nanny)
+
+## Disable Network
+;#72.active = 0 // this is needed or it will constantly try to send queued mail
 
 # Updating Webclient
 cp ~/favicon-boa.ico /dome-client.js/public
