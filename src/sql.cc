@@ -213,50 +213,50 @@ class SQLSessionPool {
 
         SQLSession* get_connection() {
             std::unique_lock<std::mutex> lock(connections_mutex);
-            oklog("in SQLSessionPool get_connection\n");
+            /* oklog("in SQLSessionPool get_connection\n"); */
             auto connection = this->get_or_create_connection();
-            oklog("done calling get_or_create_connection\n");
+            /* oklog("done calling get_or_create_connection\n"); */
             
             if (connection == nullptr) {
-                oklog("returning connection\n");
+                /* oklog("returning connection\n"); */
                 return connection;
             }
 
-            oklog("setting connection busy");
+            /* oklog("setting connection busy"); */
             set_connection_busy(connection);
-            oklog("returning connection");
+            /* oklog("returning connection"); */
             return connection;
         }
 
         void release_connection(SQLSession* session) {
-            oklog("in release connection\n");
+            /* oklog("in release connection\n"); */
             std::unique_lock<std::mutex> lock(connections_mutex);
 
-            oklog("release connection: post mutex relesae\n");
+            /* oklog("release connection: post mutex relesae\n"); */
             // We're over connection cap, release to get back to cap.
-            oklog("SQL_SOFT_MAX_CONNECTIONS: %d \n", SQL_SOFT_MAX_CONNECTIONS);
-            oklog("calling session->is_healthy\n");
+            /* oklog("SQL_SOFT_MAX_CONNECTIONS: %d \n", SQL_SOFT_MAX_CONNECTIONS); */
+            /* oklog("calling session->is_healthy\n"); */
             try {
                 session->is_healthy();
             }
             catch (...) {
                 oklog("an exception occured and was caught.\n");
             }
-            oklog("done calling is_healthy before if");
+            /* oklog("done calling is_healthy before if"); */
             if (size() > SQL_SOFT_MAX_CONNECTIONS || !session->is_healthy()) {
-                oklog("in release connection: inside if statement, calling expire_connection()");
+                /* oklog("in release connection: inside if statement, calling expire_connection()"); */
                 expire_connection(session);
                 oklog("  found unhealthy connection\n");
                 return;
             }
-            oklog("release connection: about to set connection idle\n");
+            /* oklog("release connection: about to set connection idle\n"); */
             // Normal release, bring back to idle pool.
             set_connection_idle(session);
-            oklog("release connection: done setting connection idle; done in release connection\n");
+            /* oklog("release connection: done setting connection idle; done in release connection\n"); */
         }
 
         void expire_connection(SQLSession* session) {
-            oklog("in expire_connection\n");
+            /* oklog("in expire_connection\n"); */
             if (auto it = connections_busy.find(session); it != connections_busy.end()) {
                 it->second->wait();
                 it->second->shutdown();
@@ -288,21 +288,21 @@ class SQLSessionPool {
         }
 
         std::size_t size() const {
-            oklog("inside size1\n");
+            /* oklog("inside size1\n"); */
             size_idle() + size_busy();
-            oklog("finished size_idle() and size_busy() initial calls\n");
+            /* oklog("finished size_idle() and size_busy() initial calls\n"); */
             return size_idle() + size_busy();
         }
 
         std::size_t size_idle() const {
-            oklog("inside size_idle()\n");
+            /* oklog("inside size_idle()\n"); */
             return connections_idle.size();
         }
         
         std::size_t size_busy() const {
-            oklog("inside size_busy\n");
+            /* oklog("inside size_busy\n"); */
             connections_busy.size();
-            oklog("finished calling initial check in size_busy\n");
+            /* oklog("finished calling initial check in size_busy\n"); */
             return connections_busy.size();
         }
 
@@ -314,23 +314,23 @@ class SQLSessionPool {
         virtual std::unique_ptr<SQLSession> create_connection() = 0;
 
         SQLSession* get_or_create_connection() {
-            oklog("in get_or_create_connection1\n");
+            /* oklog("in get_or_create_connection1\n"); */
             for (auto&& item : this->connections_idle) {
                 if (!item.first->is_healthy()) {
-                    oklog("  expiring unhealthy connection\n");
+                    /* oklog("  expiring unhealthy connection\n"); */
                     expire_connection(item.first);
                     continue;
                 }
                 return item.first;
             }
 
-            oklog("  creating new connection\n");
+            /* oklog("  creating new connection\n"); */
             auto connection = create_connection();
-            oklog(" done creating connection\n");
+            /* oklog(" done creating connection\n"); */
             auto result = connection.get();
-            oklog(" setting result\n");
+            /* oklog(" setting result\n"); */
             connections_idle[result] = std::move(connection);
-            oklog(" finished setting result, returning result\n");
+            /* oklog(" finished setting result, returning result\n"); */
             return result;
         }
 
@@ -358,10 +358,10 @@ class SQLSessionPool {
 class PostgreSQLSession: public SQLSession {
     public:
         PostgreSQLSession(Uri* uri) {
-            oklog("in the PostgresSQLSessoin constructor\n");
+            /* oklog("in the PostgresSQLSessoin constructor\n"); */
             connection_string = uri->full_string;    
             connection = std::make_unique<pqxx::connection>(connection_string);
-            oklog("postgressqlsession constructor, finished.\n");
+            /* oklog("postgressqlsession constructor, finished.\n"); */
         }
 
         void query(std::string statement, Var* bind, Var* ret, unsigned char options = 0) {
@@ -437,11 +437,11 @@ class PostgreSQLSession: public SQLSession {
         }
 
         bool is_healthy() {
-            oklog("inside is_healthy\n");
+            /* oklog("inside is_healthy\n"); */
             this->broken_connection;
-            oklog("done calling broken_connection\n");
+            /* oklog("done calling broken_connection\n"); */
             connection->is_open();
-            oklog("done calling connection->is_open\n");
+            /* oklog("done calling connection->is_open\n"); */
             return !this->broken_connection && connection->is_open();
         }
 
@@ -460,7 +460,7 @@ class PostgreSQLSessionPool: public SQLSessionPool {
         PostgreSQLSessionPool(std::unique_ptr<Uri> uri) : SQLSessionPool(std::move(uri)) { }
     protected:
         std::unique_ptr<SQLSession> create_connection() {
-            oklog("in PostgresSQLSessionPool create_connection\n");
+            /* oklog("in PostgresSQLSessionPool create_connection\n"); */
             return std::make_unique<PostgreSQLSession>(connection_uri.get());
         }
 };
@@ -559,7 +559,7 @@ query_callback(const Var arglist, Var *ret)
                     session->query(query, arglist.v.list[3].v.list, ret);
                 }
                 // We're done with the connection, let it go back to the pool.
-                oklog("calling release connection 1\n");
+                /* oklog("calling release connection 1\n"); */
                 pool->release_connection(session);
                 break;
             } catch (pqxx::sql_error) {
@@ -569,18 +569,18 @@ query_callback(const Var arglist, Var *ret)
                 oklog("pqxx broken connection caught \n");
                 throw;
             } catch (const std::runtime_error& re) {
-                oklog("runtime error detected 1\n");
+                /* oklog("runtime error detected 1\n"); */
                 if (tries >= 3) {
                     throw;
                 }
-                oklog("checking if session is nullptr\n");
+                /* oklog("checking if session is nullptr\n"); */
                 if (session == nullptr) {
                     oklog("session is nullptr. doing nothing.");
                 } else {
                     // We're done with the connection, let it go back to the pool.
-                    oklog("calling release connection again 1\n");
+                    /* oklog("calling release connection again 1\n"); */
                     pool->release_connection(session);
-                    oklog("finished calling release_connection\n");
+                    /* oklog("finished calling release_connection\n"); */
                 }
             } 
         }        
