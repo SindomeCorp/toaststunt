@@ -1,5 +1,6 @@
 /*
  * file i/o server modification
+ * Based on File Utilities Package (FIO) v1.5
  */
 
 #define FILE_IO 1
@@ -70,15 +71,6 @@ struct line_buffer {
     struct line_buffer *next;
 };
 
-
-/***************************************************************
- * Version and package informaion
- ***************************************************************/
-
-char file_package_name[]    = "FIO";
-char file_package_version[] = "1.7";
-
-
 /***************************************************************
  * File <-> FHANDLE descriptor table interface
  ***************************************************************/
@@ -88,13 +80,17 @@ static std::unordered_map <Num, file_handle> file_table;
 static Num next_handle = 1;
 
 static char file_handle_valid(Var fhandle) {
-    Num i = fhandle.v.num;
     if (fhandle.type != TYPE_INT)
         return 0;
+    
+    Num i = fhandle.v.num;
+    
     if ((i < 0) || (i >= next_handle))
         return 0;
+    
     if (file_table.count(i) == 0)
         return 0;
+    
     return file_table[i].valid;
 }
 
@@ -341,24 +337,6 @@ const char *file_resolve_path(const char *pathname) {
 
 /***************************************************************
  * Built in functions
- * file_version
- ***************************************************************/
-
-static package
-bf_file_version(Var arglist, Byte next, void *vdata, Objid progr)
-{
-    char tmpbuffer[50];
-    Var rv;
-
-    sprintf(tmpbuffer, "%s/%s", file_package_name, file_package_version);
-
-    rv.type = TYPE_STR;
-    rv.v.str = str_dup(tmpbuffer);
-
-    return make_var_pack(rv);
-
-}
-
 
 /***************************************************************
  * File open and close.
@@ -1590,7 +1568,6 @@ register_fileio(void)
 {
 #if FILE_IO
 
-    register_function("file_version", 0, 0, bf_file_version);
     register_function("file_handles", 0, 0, bf_file_handles);
 
     register_function("file_open", 2, 2, bf_file_open, TYPE_STR, TYPE_STR);

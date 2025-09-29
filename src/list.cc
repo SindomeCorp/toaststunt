@@ -43,11 +43,6 @@
 #include "background.h"   // Threads
 #include "random.h"
 
-/* Bandaid: Something is killing all of our references to the
- * empty list, which is causing the server to crash. So this is
- * now a global and utils.cc won't free the list if it's emptylist. */
-Var emptylist;
-
 Var
 new_list(int size)
 {
@@ -55,6 +50,7 @@ new_list(int size)
     Var *ptr;
 
     if (size == 0) {
+        static Var emptylist;
 
         if (emptylist.v.list == nullptr) {
             if ((ptr = (Var *)mymalloc(1 * sizeof(Var), M_LIST)) == nullptr)
@@ -174,9 +170,10 @@ listset(Var list, Var value, int pos)
         free_var(list);
     }
 
-#ifdef MEMO_VALUE_BYTES
+#ifdef MEMO_SIZE
     /* reset the memoized size */
-    ((int *)(_new.v.list))[MEMO_OFFSET] = 0;
+    var_metadata *metadata = ((var_metadata*)_new.v.list) - 1;
+    metadata->size = 0;
 #endif
 
     free_var(_new.v.list[pos]);
@@ -196,12 +193,12 @@ doinsert(Var list, Var value, int pos)
     int i;
     int size = list.v.list[0].v.num + 1;
 
-    /* Bandaid: See the top of list.cc for an explanation */
-    if (list.v.list != emptylist.v.list && var_refcount(list) == 1 && pos == size) {
+    if (var_refcount(list) == 1 && pos == size) {
         list.v.list = (Var *) myrealloc(list.v.list, (size + 1) * sizeof(Var), M_LIST);
-#ifdef MEMO_VALUE_BYTES
+#ifdef MEMO_SIZE
         /* reset the memoized size */
-        ((int *)(list.v.list))[MEMO_OFFSET] = 0;
+        var_metadata *metadata = ((var_metadata*)list.v.list) - 1;
+        metadata->size = 0;
 #endif
         list.v.list[0].v.num = size;
         list.v.list[pos] = value;
@@ -329,8 +326,9 @@ Var
 sublist(Var list, int lower, int upper)
 {
     if (lower > upper) {
+        Var empty = new_list(0);
         free_var(list);
-        return new_list(0);
+        return empty;
     } else {
         Var r;
         int i;
@@ -518,10 +516,13 @@ unparse_value(Stream * s, Var v)
 int
 list_sizeof(Var *list)
 {
+#ifdef MEMO_SIZE
+    var_metadata *metadata = ((var_metadata*)list) - 1;
+#endif
     int i, len, size;
 
-#ifdef MEMO_VALUE_BYTES
-    if ((size = (((int *)(list))[MEMO_OFFSET])))
+#ifdef MEMO_SIZE
+    if ((size = metadata->size))
         return size;
 #endif
 
@@ -531,8 +532,8 @@ list_sizeof(Var *list)
         size += value_bytes(list[i]);
     }
 
-#ifdef MEMO_VALUE_BYTES
-    (((int *)(list))[MEMO_OFFSET]) = size;
+#ifdef MEMO_SIZE
+    metadata->size = size;
 #endif
 
     return size;
@@ -935,7 +936,7 @@ bf_slice(Var arglist, Byte next, void *vdata, Objid progr)
 
 /* Sorts various MOO types using std::sort.
  * Args: LIST <values to sort>, [LIST <values to sort by>], [INT <natural sort ordering?>], [INT <reverse?>] */
-void sort_callback(const Var arglist, Var *ret)
+void sort_callback(Var arglist, Var *ret, void *extra_data)
 {
     const int nargs = arglist.v.list[0].v.num;
     const int list_to_sort = (nargs >= 2 && arglist.v.list[2].v.list[0].v.num > 0 ? 2 : 1);
@@ -1013,13 +1014,10 @@ void sort_callback(const Var arglist, Var *ret)
 static package
 bf_sort(Var arglist, Byte next, void *vdata, Objid progr)
 {
-    char *human_string = nullptr;
-    asprintf(&human_string, "sorting %" PRIdN " element list", arglist.v.list[1].v.list[0].v.num);
-
-    return background_thread(sort_callback, &arglist, human_string);
+    return background_thread(sort_callback, &arglist);
 }
 
-void all_members_thread_callback(Var arglist, Var *ret)
+void all_members_thread_callback(Var arglist, Var *ret, void *extra_data)
 {
     *ret = new_list(0);
     Var data = arglist.v.list[1];
@@ -1034,10 +1032,7 @@ void all_members_thread_callback(Var arglist, Var *ret)
 static package
 bf_all_members(Var arglist, Byte next, void *vdata, Objid progr)
 {
-    char *human_string = nullptr;
-    asprintf(&human_string, "all_members in %" PRIdN " element list", arglist.v.list[2].v.list[0].v.num);
-
-    return background_thread(all_members_thread_callback, &arglist, human_string);
+    return background_thread(all_members_thread_callback, &arglist);
 }
 
 static package
