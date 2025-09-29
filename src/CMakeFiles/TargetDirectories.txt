@@ -1,0 +1,3 @@
+/home/ubuntu/toaststunt/src/CMakeFiles/moo.dir
+/home/ubuntu/toaststunt/src/CMakeFiles/edit_cache.dir
+/home/ubuntu/toaststunt/src/CMakeFiles/rebuild_cache.dir

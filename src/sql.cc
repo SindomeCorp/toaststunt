@@ -50,6 +50,10 @@
 #   include <mysql/mysql.h>
 #endif
 
+// SET THIS TO FALSE FOR PROD!  
+static bool debugging = true;  // Set to false to disable local logs
+#define DLOG(...) do { if (debugging) oklog(__VA_ARGS__); } while (0)
+
 /* The MOO database really dislikes newlines, so we'll want to strip them.
  * I like what MOOSQL did here by replacing them with tabs, so we'll do that.
  * TODO: Check the performance impact of this being on by default with long strings. */
@@ -213,66 +217,66 @@ class SQLSessionPool {
 
         SQLSession* get_connection() {
             std::unique_lock<std::mutex> lock(connections_mutex);
-            oklog("in SQLSessionPool get_connection\n");
+            DLOG("DLOG in SQLSessionPool get_connection\n");
             auto connection = this->get_or_create_connection();
-            oklog("done calling get_or_create_connection\n");
+            DLOG("done calling get_or_create_connection\n");
             
             if (connection == nullptr) {
-                oklog("returning connection\n");
+                DLOG("returning connection\n");
                 return connection;
             }
 
-            oklog("setting connection busy");
+            DLOG("setting connection busy");
             set_connection_busy(connection);
-            oklog("returning connection");
+            DLOG("returning connection");
             return connection;
         }
 
         void release_connection(SQLSession* session) {
-            oklog("in release connection\n");
+            DLOG("in release connection\n");
             std::unique_lock<std::mutex> lock(connections_mutex);
 
-            oklog("release connection: post mutex relesae\n");
+            DLOG("release connection: post mutex relesae\n");
             // We're over connection cap, release to get back to cap.
-            oklog("SQL_SOFT_MAX_CONNECTIONS: %d \n", SQL_SOFT_MAX_CONNECTIONS);
-            oklog("calling session->is_healthy\n");
+            DLOG("SQL_SOFT_MAX_CONNECTIONS: %d \n", SQL_SOFT_MAX_CONNECTIONS);
+            DLOG("calling session->is_healthy\n");
             try {
                 session->is_healthy();
             }
             catch (...) {
                 oklog("an exception occured and was caught.\n");
             }
-            oklog("done calling is_healthy before if");
+            DLOG("done calling is_healthy before if");
             if (size() > SQL_SOFT_MAX_CONNECTIONS || !session->is_healthy()) {
-                oklog("in release connection: inside if statement, calling expire_connection()");
+                DLOG("in release connection: inside if statement, calling expire_connection()");
                 expire_connection(session);
-                oklog("  found unhealthy connection\n");
+                DLOG("  found unhealthy connection\n");
                 return;
             }
-            oklog("release connection: about to set connection idle\n");
+            DLOG("release connection: about to set connection idle\n");
             // Normal release, bring back to idle pool.
             set_connection_idle(session);
-            oklog("release connection: done setting connection idle; done in release connection\n");
+            DLOG("release connection: done setting connection idle; done in release connection\n");
         }
 
         void expire_connection(SQLSession* session) {
-            oklog("in expire_connection\n");
+            DLOG("in expire_connection\n");
             if (auto it = connections_busy.find(session); it != connections_busy.end()) {
                 it->second->wait();
                 it->second->shutdown();
                 connections_busy.erase(it);
-                oklog("  found unhealthy busy connection, erased\n");
+                DLOG("  found unhealthy busy connection, erased\n");
             }
 
             if (auto it = connections_idle.find(session); it != connections_idle.end()) {
                 it->second->shutdown();
                 connections_idle.erase(it);
-                oklog("  found unhealthy idle connection, erased\n");
+                DLOG("  found unhealthy idle connection, erased\n");
             }
         }
 
         void stop() {
-            oklog("in stop\n");
+            DLOG("in stop\n");
             std::unique_lock<std::mutex> lock(connections_mutex);            
             for (auto&& connection : connections_idle) {
                 connection.second->shutdown();
@@ -288,21 +292,21 @@ class SQLSessionPool {
         }
 
         std::size_t size() const {
-            oklog("inside size1\n");
+            DLOG("inside size1\n");
             size_idle() + size_busy();
-            oklog("finished size_idle() and size_busy() initial calls\n");
+            DLOG("finished size_idle() and size_busy() initial calls\n");
             return size_idle() + size_busy();
         }
 
         std::size_t size_idle() const {
-            oklog("inside size_idle()\n");
+            DLOG("inside size_idle()\n");
             return connections_idle.size();
         }
         
         std::size_t size_busy() const {
-            oklog("inside size_busy\n");
+            DLOG("inside size_busy\n");
             connections_busy.size();
-            oklog("finished calling initial check in size_busy\n");
+            DLOG("finished calling initial check in size_busy\n");
             return connections_busy.size();
         }
 
@@ -314,23 +318,23 @@ class SQLSessionPool {
         virtual std::unique_ptr<SQLSession> create_connection() = 0;
 
         SQLSession* get_or_create_connection() {
-            oklog("in get_or_create_connection1\n");
+            DLOG("in get_or_create_connection1\n");
             for (auto&& item : this->connections_idle) {
                 if (!item.first->is_healthy()) {
-                    oklog("  expiring unhealthy connection\n");
+                    DLOG("  expiring unhealthy connection\n");
                     expire_connection(item.first);
                     continue;
                 }
                 return item.first;
             }
 
-            oklog("  creating new connection\n");
+            DLOG("  creating new connection\n");
             auto connection = create_connection();
-            oklog(" done creating connection\n");
+            DLOG(" done creating connection\n");
             auto result = connection.get();
-            oklog(" setting result\n");
+            DLOG(" setting result\n");
             connections_idle[result] = std::move(connection);
-            oklog(" finished setting result, returning result\n");
+            DLOG(" finished setting result, returning result\n");
             return result;
         }
 
@@ -358,10 +362,10 @@ class SQLSessionPool {
 class PostgreSQLSession: public SQLSession {
     public:
         PostgreSQLSession(Uri* uri) {
-            oklog("in the PostgresSQLSessoin constructor\n");
+            DLOG("in the PostgresSQLSessoin constructor\n");
             connection_string = uri->full_string;    
             connection = std::make_unique<pqxx::connection>(connection_string);
-            oklog("postgressqlsession constructor, finished.\n");
+            DLOG("postgressqlsession constructor, finished.\n");
         }
 
         void query(std::string statement, Var* bind, Var* ret, unsigned char options = 0) {
@@ -431,17 +435,19 @@ class PostgreSQLSession: public SQLSession {
         }
 
         void shutdown() {
-            if (!this->broken_connection) {
+            //if (!this->broken_connection) {
                 connection->close();
-            }
+            //} else {
+            //    oklog("shutdown() is not actually closing the connection, as the connection didn't pass !this->borken_connection");
+            //}
         }
 
         bool is_healthy() {
-            oklog("inside is_healthy\n");
+            DLOG("inside is_healthy\n");
             this->broken_connection;
-            oklog("done calling broken_connection\n");
+            DLOG("done calling broken_connection\n");
             connection->is_open();
-            oklog("done calling connection->is_open\n");
+            DLOG("done calling connection->is_open\n");
             return !this->broken_connection && connection->is_open();
         }
 
@@ -460,7 +466,7 @@ class PostgreSQLSessionPool: public SQLSessionPool {
         PostgreSQLSessionPool(std::unique_ptr<Uri> uri) : SQLSessionPool(std::move(uri)) { }
     protected:
         std::unique_ptr<SQLSession> create_connection() {
-            oklog("in PostgresSQLSessionPool create_connection\n");
+            DLOG("in PostgresSQLSessionPool create_connection\n");
             return std::make_unique<PostgreSQLSession>(connection_uri.get());
         }
 };
@@ -559,7 +565,7 @@ query_callback(const Var arglist, Var *ret)
                     session->query(query, arglist.v.list[3].v.list, ret);
                 }
                 // We're done with the connection, let it go back to the pool.
-                oklog("calling release connection 1\n");
+                DLOG("calling release connection 1\n");
                 pool->release_connection(session);
                 break;
             } catch (pqxx::sql_error) {
@@ -573,14 +579,14 @@ query_callback(const Var arglist, Var *ret)
                 if (tries >= 3) {
                     throw;
                 }
-                oklog("checking if session is nullptr\n");
+                DLOG("checking if session is nullptr\n");
                 if (session == nullptr) {
-                    oklog("session is nullptr. doing nothing.");
+                    DLOG("session is nullptr. doing nothing.");
                 } else {
                     // We're done with the connection, let it go back to the pool.
-                    oklog("calling release connection again 1\n");
+                    DLOG("calling release connection again 1\n");
                     pool->release_connection(session);
-                    oklog("finished calling release_connection\n");
+                    DLOG("finished calling release_connection\n");
                 }
             } 
         }        
