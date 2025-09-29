@@ -28,7 +28,9 @@ static void delete_cache_entry(const char *pattern, unsigned char options);
 static Var result_indices(int ovector[], int n);
 extern void pcre_shutdown(void);
 
-extern void free_entry(pcre_cache_entry *);
-extern struct pcre_cache_entry * get_pcre(const char *string, unsigned char options);
+#ifdef SQLITE3_FOUND
+#include <sqlite3.h>
+extern void sqlite_regexp(sqlite3_context *ctx, int argc, sqlite3_value **argv);
+#endif
 
 #endif /* EXTENSION_PCRE_H */

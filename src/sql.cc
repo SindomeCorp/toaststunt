@@ -2,23 +2,6 @@
  * sql server modification
  * 
  * brief: Code to support SQL database connections in MOOcode.
- *
- * verbatim:
- * Each sql database that's supported must define its own implementation of the
- * following classes:
- *
- *      SQLSession
- *      SQLSessionPool
- *
- * We define generic functions on these classes which provide an abstraction layer
- * of an individual SQL library's functions. Common convention is to prepend
- * SQL database type to the class name when inheriting. 
- *
- * After implementing these classes, an entry has to be created in:
- *
- * create_session_pool()
- * register_sql()
- *
  */
 
 #include <iostream>
@@ -27,6 +10,8 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <string>
+#include <stdexcept>
 
 #include "background.h"
 #include "functions.h"
@@ -36,7 +21,7 @@
 #include "numbers.h"
 #include "server.h"
 #include "storage.h"
-#include "pcre_moo.h"
+// DO NOT include pcre_moo.h (upstream made its API internal); we’ll use a local helper.
 #include "utils.h"
 
 #ifdef SQL_FOUND
@@ -50,38 +35,29 @@
 #   include <mysql/mysql.h>
 #endif
 
+// PCRE (local helper for URI parsing only)
+#include <pcre.h>
+#include <mutex>   // std::once_flag, std::call_once
+
 // SET THIS TO FALSE FOR PROD!  
 static bool debugging = true;  // Set to false to disable local logs
 #define DLOG(...) do { if (debugging) oklog(__VA_ARGS__); } while (0)
 
-/* The MOO database really dislikes newlines, so we'll want to strip them.
- * I like what MOOSQL did here by replacing them with tabs, so we'll do that.
- * TODO: Check the performance impact of this being on by default with long strings. */
+/* Strip newlines for MOO strings (tabs instead). */
 static void sanitize_string_for_moo(char *string)
 {
-    if (!string)
-        return;
-
-    char *p = string;
-
-    while (*p)
-    {
-        if (*p == '\n')
-            *p = '\t';
-
-        ++p;
+    if (!string) return;
+    for (char *p = string; *p; ++p) {
+        if (*p == '\n') *p = '\t';
     }
 }
 
-/* Take a result string and convert it into a MOO type.
- * Return a Var of the appropriate MOO type for the value.
- * TODO: Try to parse strings containing MOO lists? */
+/* Convert a string into an appropriate MOO Var. */
 static Var string_to_moo_type(char* str, bool parse_objects, bool sanitize_string)
 {
     Var s;
 
-    if (str == nullptr)
-    {
+    if (str == nullptr) {
         s.type = TYPE_STR;
         s.v.str = str_dup("NULL");
         return s;
@@ -90,100 +66,104 @@ static Var string_to_moo_type(char* str, bool parse_objects, bool sanitize_strin
     double double_test = 0.0;
     Num int_test = 0;
 
-    if (str[0] == '#' && parse_objects && parse_number(str + 1, &int_test, 0) == 1)
-    {
-        // Add one to the pointer to skip over the # and check the rest for numeracy
+    if (str[0] == '#' && parse_objects && parse_number(str + 1, &int_test, 0) == 1) {
         s.type = TYPE_OBJ;
         s.v.obj = int_test;
     } else if (parse_number(str, &int_test, 0) == 1) {
         s.type = TYPE_INT;
         s.v.num = int_test;
-    } else if (parse_float(str, &double_test) == 1)
-    {
+    } else if (parse_float(str, &double_test) == 1) {
         s.type = TYPE_FLOAT;
         s.v.fnum = double_test;
     } else {
-        if (sanitize_string)
-            sanitize_string_for_moo(str);
+        if (sanitize_string) sanitize_string_for_moo(str);
         s.type = TYPE_STR;
         s.v.str = str_dup(str);
     }
     return s;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * Local URI parser using PCRE (decoupled from upstream pcre_moo.cc internals)
+ * ──────────────────────────────────────────────────────────────────────────── */
+namespace {
+    static std::once_flag g_uri_once;
+    static pcre* g_uri_re = nullptr;
+    static pcre_extra* g_uri_extra = nullptr;
+
+    // Named groups: scheme, user, pass, host, port, path, params
+    static const char* const URI_PATTERN =
+        R"((?<scheme>[^:]+):\/\/(?:(?:(?<user>[^:]+):(?<pass>[^@]+))(?=@)@)?(?<host>[^?:/]*)(?::(?<port>\d+))?(?:\/(?<path>[^?]+))\?(?<params>.+))";
+
+    static void init_uri_regex() {
+        const char* err = nullptr;
+        int eos = 0;
+        g_uri_re = pcre_compile(URI_PATTERN, PCRE_CASELESS, &err, &eos, nullptr);
+        if (!g_uri_re) {
+            oklog("URI PCRE compile failed at %d: %s\n", eos, err ? err : "(null)");
+            return;
+        }
+#ifdef PCRE_STUDY_JIT_COMPILE
+        g_uri_extra = pcre_study(g_uri_re, PCRE_STUDY_JIT_COMPILE, &err);
+#else
+        g_uri_extra = pcre_study(g_uri_re, 0, &err);
+#endif
+        if (err) oklog("URI PCRE study warning: %s\n", err);
+    }
+
+    static std::string get_named_group(const char* subj, int* ovec, int rc, const char* name)
+    {
+        const char* out = nullptr;
+        int got = pcre_get_named_substring(g_uri_re, subj, ovec, rc, name, &out);
+        if (got < 0 || !out) return std::string();
+        std::string s(out);
+        pcre_free_substring(out);  // prevent leaks
+        return s;
+    }
+} // namespace
+
 class Uri {
     public:
         std::string full_string;
         std::string scheme;
         std::string host;
-        unsigned short port;
+        unsigned short port = 0;
         std::string path;
         std::string user;
         std::string pass;
-        // std::string[] queryParameters;
+        std::string params;
 
-        Uri(std::string raw_url) {
-            this->full_string = raw_url;
+        explicit Uri(std::string raw_url) : full_string(std::move(raw_url)) {
+            std::call_once(g_uri_once, init_uri_regex);
+            if (!g_uri_re) {
+                throw std::runtime_error("URI regex unavailable.");
+            }
 
-            /* Compile the pattern */
-            struct pcre_cache_entry *entry = get_pcre("(?<scheme>[^:]+):\\/\\/(?:(?:(?<user>[^:]+):(?<pass>[^@]+))(?=@)@)?(?<host>[^?:/]*)(?::(?<port>\\d+))?(?:\\/(?<path>[^?]+))\?(?<params>.+)", PCRE_CASELESS);
+            const char* subject = full_string.c_str();
+            int subject_length = static_cast<int>(full_string.size());
+            // Enough space for 30 groups (3 ints per group)
+            int ovec[90] = {0};
 
-            /* Determine how many subpatterns match so we can allocate memory. */
-            int oveccount = (entry->captures + 1) * 3;
-            int ovector[oveccount];
+            int rc = pcre_exec(g_uri_re, g_uri_extra, subject, subject_length, 0, 0, ovec, (int)(sizeof(ovec)/sizeof(ovec[0])));
+            if (rc < 0) {
+                throw std::runtime_error("Failed to parse URI.");
+            }
 
-            int offset = 0, rc = 0, named_substrings;
-            unsigned int loops = 0;
-            const char *matched_substring;
-            int subject_length = raw_url.length();
-            const char* subject = raw_url.c_str();
+            scheme = get_named_group(subject, ovec, rc, "scheme");
+            user   = get_named_group(subject, ovec, rc, "user");
+            pass   = get_named_group(subject, ovec, rc, "pass");
+            host   = get_named_group(subject, ovec, rc, "host");
+            path   = get_named_group(subject, ovec, rc, "path");
+            params = get_named_group(subject, ovec, rc, "params");
 
-            /* Execute the match. */
-            while (offset < subject_length)
-            {
-                loops++;
-                rc = pcre_exec(entry->re, entry->extra, subject, subject_length, offset, 0, ovector, oveccount);
-                if (rc < 0 && rc != PCRE_ERROR_NOMATCH)
-                {
-                    /* Encountered some freaky error. Throw an exception. */
-                    throw std::runtime_error("pcre_exec failed to parse uri.");
-                } else if (rc == 0) {
-                    /* We don't have enough room to store all of these substrings. */
-                    throw std::runtime_error("pcre_exec ran out of room when parsing uri.");
-                } else if (rc == PCRE_ERROR_NOMATCH) {
-                    /* There are no more matches. */
-                    break;
-                } else if (loops >= 20) {
-                    /* The loop has iterated beyond the maximum limit, probably locking the server. Kill it. */
-                    throw std::runtime_error("pcre_exec was taking too long to parse uri, and it was killed.");
+            std::string port_s = get_named_group(subject, ovec, rc, "port");
+            if (!port_s.empty()) {
+                try {
+                    int p = std::stoi(port_s);
+                    if (p >= 0 && p <= 65535) port = static_cast<unsigned short>(p);
+                } catch (...) {
+                    // leave port = 0
                 }
-
-                /* Get named fields */
-                const char* result = "";
-                
-                pcre_get_named_substring(entry->re, raw_url.c_str(), ovector, rc, "scheme", &result);
-                this->scheme = result;
-
-                pcre_get_named_substring(entry->re, raw_url.c_str(), ovector, rc, "host", &result);
-                this->host = result;
-
-                pcre_get_named_substring(entry->re, raw_url.c_str(), ovector, rc, "user", &result);
-                this->user = result;
-
-                pcre_get_named_substring(entry->re, raw_url.c_str(), ovector, rc, "pass", &result);
-                this->pass = result;
-
-                pcre_get_named_substring(entry->re, raw_url.c_str(), ovector, rc, "path", &result);
-                this->path = result;
-
-                pcre_get_named_substring(entry->re, raw_url.c_str(), ovector, rc, "port", &result);
-                auto port_str = (std::string)result;
-                if (!port_str.empty()) {
-                    this->port = stoi(port_str);
-                }
-
-                /* Begin at the end of the previous match on the next iteration of the loop. */
-                offset = ovector[1];
             }
         }
 };
@@ -209,9 +189,9 @@ class SQLSessionPool {
     public:
         std::unique_ptr<Uri> connection_uri;
         int handle_id = -1;
-        unsigned char options;
+        unsigned char options{0};
 
-        SQLSessionPool(std::unique_ptr<Uri> uri) {
+        explicit SQLSessionPool(std::unique_ptr<Uri> uri) {
             connection_uri = std::move(uri);
         }
 
@@ -233,45 +213,40 @@ class SQLSessionPool {
         }
 
         void release_connection(SQLSession* session) {
+            if (!session) return;
             DLOG("in release connection\n");
             std::unique_lock<std::mutex> lock(connections_mutex);
 
-            DLOG("release connection: post mutex relesae\n");
-            // We're over connection cap, release to get back to cap.
-            DLOG("SQL_SOFT_MAX_CONNECTIONS: %d \n", SQL_SOFT_MAX_CONNECTIONS);
-            DLOG("calling session->is_healthy\n");
+            DLOG("release connection: post mutex release\n");
             try {
-                session->is_healthy();
+                (void)session->is_healthy();
+            } catch (...) {
+                oklog("is_healthy() threw; treating as unhealthy.\n");
             }
-            catch (...) {
-                oklog("an exception occured and was caught.\n");
-            }
-            DLOG("done calling is_healthy before if");
+
             if (size() > SQL_SOFT_MAX_CONNECTIONS || !session->is_healthy()) {
-                DLOG("in release connection: inside if statement, calling expire_connection()");
+                DLOG("expire_connection(session) (over cap or unhealthy)\n");
                 expire_connection(session);
-                DLOG("  found unhealthy connection\n");
                 return;
             }
-            DLOG("release connection: about to set connection idle\n");
-            // Normal release, bring back to idle pool.
+            DLOG("Normal release: set_connection_idle\n");
             set_connection_idle(session);
-            DLOG("release connection: done setting connection idle; done in release connection\n");
         }
 
         void expire_connection(SQLSession* session) {
+            if (!session) return;
             DLOG("in expire_connection\n");
             if (auto it = connections_busy.find(session); it != connections_busy.end()) {
                 it->second->wait();
                 it->second->shutdown();
                 connections_busy.erase(it);
-                DLOG("  found unhealthy busy connection, erased\n");
+                DLOG("  expired busy connection\n");
             }
 
             if (auto it = connections_idle.find(session); it != connections_idle.end()) {
                 it->second->shutdown();
                 connections_idle.erase(it);
-                DLOG("  found unhealthy idle connection, erased\n");
+                DLOG("  expired idle connection\n");
             }
         }
 
@@ -292,25 +267,18 @@ class SQLSessionPool {
         }
 
         std::size_t size() const {
-            DLOG("inside size1\n");
-            size_idle() + size_busy();
-            DLOG("finished size_idle() and size_busy() initial calls\n");
             return size_idle() + size_busy();
         }
 
         std::size_t size_idle() const {
-            DLOG("inside size_idle()\n");
             return connections_idle.size();
         }
         
         std::size_t size_busy() const {
-            DLOG("inside size_busy\n");
-            connections_busy.size();
-            DLOG("finished calling initial check in size_busy\n");
             return connections_busy.size();
         }
 
-        ~SQLSessionPool() {
+        virtual ~SQLSessionPool() {
             this->stop();
         }
     
@@ -340,6 +308,7 @@ class SQLSessionPool {
 
         void set_connection_busy(SQLSession* session) {
             if (auto it = connections_idle.find(session); it != connections_idle.end()) {
+                // C++17 extract is OK now that we’re on C++17
                 auto node = connections_idle.extract(it);
                 connections_busy.insert(std::move(node));
             }
@@ -361,21 +330,20 @@ class SQLSessionPool {
 #ifdef POSTGRESQL_FOUND
 class PostgreSQLSession: public SQLSession {
     public:
-        PostgreSQLSession(Uri* uri) {
-            DLOG("in the PostgresSQLSessoin constructor\n");
+        explicit PostgreSQLSession(Uri* uri) {
+            DLOG("PostgreSQLSession ctor\n");
             connection_string = uri->full_string;    
             connection = std::make_unique<pqxx::connection>(connection_string);
-            DLOG("postgressqlsession constructor, finished.\n");
+            DLOG("PostgreSQLSession ctor done\n");
         }
 
-        void query(std::string statement, Var* bind, Var* ret, unsigned char options = 0) {
+        void query(std::string statement, Var* bind, Var* ret, unsigned char options = 0) override {
             std::unique_lock<std::mutex> lock(busy_mutex);
 
             try {
                 pqxx::work txn {*connection.get()};
                 pqxx::result res;
                 
-                // Code for binding prepared statements.
                 if (bind != nullptr) {
                     pqxx::params p;
                     for (int bind_col=1; bind_col <= bind->v.num; bind_col++) {
@@ -393,9 +361,12 @@ class PostgreSQLSession: public SQLSession {
                             case TYPE_BOOL:
                                 p.append(bind[bind_col].v.truth);
                                 break;
+                            default:
+                                // Unknown type -> NULL
+                                p.append(nullptr);
+                                break;
                         }
                     }
-                    
                     res = txn.exec_params(statement, p);
                 } else {
                     res = txn.exec(statement);
@@ -425,33 +396,38 @@ class PostgreSQLSession: public SQLSession {
 
                 res.clear();
                 txn.commit();
-            } catch (const pqxx::broken_connection &e) {
+            } catch (const pqxx::broken_connection &) {
                 this->broken_connection = true;
                 throw;
-            } catch (const std::runtime_error& re) {
+            } catch (const std::exception &) {
                 this->broken_connection = true;
                 throw;
             }
         }
 
-        void shutdown() {
-            //if (!this->broken_connection) {
-                connection->close();
-            //} else {
-            //    oklog("shutdown() is not actually closing the connection, as the connection didn't pass !this->borken_connection");
-            //}
+        void shutdown() override {
+            try {
+                if (connection && connection->is_open()) {
+                    // In libpqxx 7.x, close() is public; in 6.x it was protected.
+                    // We try to close, then reset regardless to ensure release.
+                    connection->close();
+                }
+            } catch (...) {
+                // ignore; we’re tearing down
+            }
+            // Always reset the pointer to release resources.
+            connection.reset();
         }
 
-        bool is_healthy() {
-            DLOG("inside is_healthy\n");
-            this->broken_connection;
-            DLOG("done calling broken_connection\n");
-            connection->is_open();
-            DLOG("done calling connection->is_open\n");
-            return !this->broken_connection && connection->is_open();
+        bool is_healthy() override {
+            try {
+                return !this->broken_connection && connection && connection->is_open();
+            } catch (...) {
+                return false;
+            }
         }
 
-        void set_broken_connection_true() {
+        void set_broken_connection_true() override {
             this->broken_connection = true;
         }
 
@@ -463,10 +439,10 @@ class PostgreSQLSession: public SQLSession {
 
 class PostgreSQLSessionPool: public SQLSessionPool {
     public:
-        PostgreSQLSessionPool(std::unique_ptr<Uri> uri) : SQLSessionPool(std::move(uri)) { }
+        explicit PostgreSQLSessionPool(std::unique_ptr<Uri> uri) : SQLSessionPool(std::move(uri)) { }
     protected:
-        std::unique_ptr<SQLSession> create_connection() {
-            DLOG("in PostgresSQLSessionPool create_connection\n");
+        std::unique_ptr<SQLSession> create_connection() override {
+            DLOG("PostgreSQLSessionPool create_connection\n");
             return std::make_unique<PostgreSQLSession>(connection_uri.get());
         }
 };
@@ -479,16 +455,13 @@ next_identifier()
 {
     int id = -1;
     int next_id = 1;
-    while (id < 0)
-    {
-        if (!connection_pools.count(next_id))
-        {
+    while (id < 0) {
+        if (!connection_pools.count(next_id)) {
             id = next_id;
             break;
         }
         next_id++;
     }
-
     return next_id;
 }
 
@@ -496,6 +469,9 @@ void sql_shutdown()
 {
     connection_pools.clear();
 }
+
+// Adapter to satisfy background_thread(void (*)(Var, Var*, void*), ...)
+static void query_callback_adapter(Var a, Var* b, void* extra);
 
 static SQLSessionPool* create_session_pool(std::string connection_string, unsigned char options)
 {
@@ -516,7 +492,6 @@ static SQLSessionPool* create_session_pool(std::string connection_string, unsign
     }
 
     throw std::runtime_error("invalid scheme provided, no schema exists by that name.");
-    return nullptr;
 }
 
 static SQLSessionPool* get_or_create_session_pool(
@@ -525,14 +500,10 @@ static SQLSessionPool* get_or_create_session_pool(
 )
 {
     for (auto& item: connection_pools) {
-        /* We're searching for a connection pool with a matching connection string for caching. */
-        if (item.second->connection_uri->full_string != connection_string) {
-            continue;
+        if (item.second->connection_uri->full_string == connection_string) {
+            return item.second.get();
         }
-        return item.second.get();
     }
-
-    /* We didn't find a matching pool, so we just create a new one. */
     return create_session_pool(connection_string, options);
 }
 
@@ -543,13 +514,13 @@ query_callback(const Var arglist, Var *ret)
     int handle_id = arglist.v.list[1].v.num;
     std::string query = arglist.v.list[2].v.str;
 
-    auto pool = connection_pools[handle_id].get();
-    if (!pool) {
+    SQLSession* session = nullptr;
+    auto pool_it = connection_pools.find(handle_id);
+    if (pool_it == connection_pools.end()) {
         *ret = str_dup_to_var("No connection handle value found by that ID.");
         return;
     }
-
-    SQLSession* session;
+    auto* pool = pool_it->second.get();
 
     try {
         int tries = 0;
@@ -557,62 +528,58 @@ query_callback(const Var arglist, Var *ret)
             tries++;
             try {
                 session = pool->get_connection();
+                if (!session) throw std::runtime_error("Failed to get SQL session.");
+
                 if (nargs < 3 || arglist.v.list[3].v.num < 1) {
-                    // There's no SQL parameters.
                     session->query(query, nullptr, ret);
                 } else {
-                    // Parameterize the SQL
                     session->query(query, arglist.v.list[3].v.list, ret);
                 }
-                // We're done with the connection, let it go back to the pool.
-                DLOG("calling release connection 1\n");
+
                 pool->release_connection(session);
+                session = nullptr;
                 break;
-            } catch (pqxx::sql_error) {
-                oklog("pqxx exception caught \n");
+            } catch (const pqxx::sql_error &) {
+                if (session) { pool->release_connection(session); session = nullptr; }
                 throw;
-            } catch (pqxx::broken_connection) {
-                oklog("pqxx broken connection caught \n");
+            } catch (const pqxx::broken_connection &) {
+                if (session) { pool->release_connection(session); session = nullptr; }
                 throw;
-            } catch (const std::runtime_error& re) {
-                oklog("runtime error detected 1\n");
+            } catch (const std::runtime_error &) {
                 if (tries >= 3) {
+                    if (session) { pool->release_connection(session); session = nullptr; }
                     throw;
                 }
-                DLOG("checking if session is nullptr\n");
-                if (session == nullptr) {
-                    DLOG("session is nullptr. doing nothing.");
-                } else {
-                    // We're done with the connection, let it go back to the pool.
-                    DLOG("calling release connection again 1\n");
+                if (session) {
                     pool->release_connection(session);
-                    DLOG("finished calling release_connection\n");
+                    session = nullptr;
                 }
             } 
         }        
     } catch (const pqxx::broken_connection& re) {
-        oklog("catching pqxx broken_connection");
         auto err = (char*)re.what();
         sanitize_string_for_moo(err);
         *ret = str_dup_to_var(err);
-    } catch (const std::runtime_error& re) {
-        oklog("catching error 1\n");
+    } catch (const std::exception& re) {
         auto err = (char*)re.what();
         sanitize_string_for_moo(err);
         *ret = str_dup_to_var(err);
-        pool->release_connection(session);
     } catch(...) {
-        oklog("catching error 2\n");
         *ret = str_dup_to_var("Unknown failure encountered.");
-        pool->release_connection(session);
     }
+}
+
+static void
+query_callback_adapter(Var a, Var* b, void* extra)
+{
+    (void)extra;
+    query_callback(a, b);
 }
 
 static package
 bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!is_wizard(progr))
-    {
+    if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
@@ -624,7 +591,7 @@ bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
         return make_var_pack(str_dup_to_var("No connection handle value by that ID."));
     }
 
-    // Input validation for arguments.
+    // Validate parameters list types if present.
     if (arglist.v.list[0].v.num == 3 && arglist.v.list[3].v.list->v.num > 0) {
         Var *tmp = arglist.v.list[3].v.list;
         for (int x = 1; x <= tmp->v.num; x++) {
@@ -633,26 +600,25 @@ bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
                 case TYPE_INT:
                 case TYPE_STR:
                 case TYPE_NUMERIC:
-                    continue;                    
+                    continue;
+                default:
+                    free_var(arglist);
+                    return make_error_pack(E_INVARG);
             }
-
-            free_var(arglist);
-            return make_error_pack(E_INVARG);
         }
     }
 
     char *human_string = nullptr;
     asprintf(&human_string, "sql query: %s", arglist.v.list[2].v.str);
 
-    // Run the query.
-    return background_thread(query_callback, &arglist, human_string);  
+    // Use adapter to satisfy new background_thread signature.
+    return background_thread(query_callback_adapter, &arglist, human_string);  
 }
 
 static package
 bf_sql_connections (Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!is_wizard(progr))
-    {
+    if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
@@ -672,8 +638,7 @@ bf_sql_connections (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_open_connection (Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!is_wizard(progr))
-    {
+    if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
@@ -683,12 +648,11 @@ bf_sql_open_connection (Var arglist, Byte next, void *vdata, Objid progr)
     try {
         std::string connection_string = arglist.v.list[1].v.str;        
         
-        unsigned char options;
+        unsigned char options = 0;
         if (arglist.v.list[0].v.num >= 2)
             options = arglist.v.list[2].v.num;        
         auto pool = get_or_create_session_pool(connection_string, options);
 
-        // Return the handle identifier integer.
         free_var(arglist); 
         ret.v.num = pool->handle_id;
         return make_var_pack(ret);
@@ -706,8 +670,7 @@ bf_sql_open_connection (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!is_wizard(progr))
-    {
+    if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
@@ -720,8 +683,7 @@ bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
     }
 
     Var ret;
-    try
-    {
+    try {
         auto pool = handle->second.get();
 
         pool->stop();
@@ -747,8 +709,7 @@ bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_info(Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!is_wizard(progr))
-    {
+    if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
@@ -789,6 +750,6 @@ void register_sql(void)
 #else /* SQL_FOUND */
 void register_sql(void) {
     oklog("REGISTER_SQL: Sql features are disabled.\n");
- }
+}
 void sql_shutdown(void) { }
-#endif /* SQL_FOUND */```
+#endif /* SQL_FOUND */
