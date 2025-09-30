@@ -82,7 +82,7 @@ class TestWaif < Test::Unit::TestCase
 
       assert_equal 123, simplify(command("; a = #{z}:new(); return a.x;"))
       assert_equal 'abc', simplify(command("; a = #{z}:new(); return a.y;"))
-      assert_equal [1], simplify(command("; a = #{z}:new(); return a.z;"))
+      assert_equal 1, simplify(command("; a = #{z}:new(); return a.z;"))
       assert_equal E_PROPNF, simplify(command("; a = #{q}:new(); return a.q;"))
       assert_equal 'wxyz', simplify(command("; a = #{q}:new(); return a.class.q;"))
     end
@@ -320,6 +320,21 @@ class TestWaif < Test::Unit::TestCase
 
       o = simplify(command(%Q|; player.stash["o"] = #{o}:new(); return "player.stash[\\\"o\\\"]";|))
       assert_equal [2, [":c", 1, 1], [":a", 1, 1]], call(o, 'c')
+    end
+  end
+
+  def test_setting_and_getting_nested_waif_map_indexes
+    run_test_as('programmer') do
+      # Create a waif class with a map property
+      waif_class = create(:waif)
+      add_property(waif_class, ':data', {}, [player, ''])
+      
+      result = simplify(command(%Q|; w = #{waif_class}:new(); w.data = ["outer" -> ["inner" -> "value"]]; return w.data["outer"]["inner"];|))
+      assert_equal "value", result
+      
+      # Test multiple levels of nesting
+      result = simplify(command(%Q|; w = #{waif_class}:new(); w.data = ["a" -> ["b" -> ["c" -> 42]]]; return w.data["a"]["b"]["c"];|))
+      assert_equal 42, result
     end
   end
 

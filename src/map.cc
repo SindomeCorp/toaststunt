@@ -37,6 +37,7 @@
 #include "map.h"
 #include "server.h"
 #include "storage.h"
+#include "streams.h"
 #include "structures.h"
 #include "utils.h"
 
@@ -644,12 +645,15 @@ map_dup(Var map)
 int
 map_sizeof(rbtree *tree)
 {
+#ifdef MEMO_SIZE
+    var_metadata *metadata = ((var_metadata*)tree) - 1;
+#endif
     rbtrav trav;
     const rbnode *pnode;
     int size;
 
-#ifdef MEMO_VALUE_BYTES
-    if ((size = (((int *)(tree))[MEMO_OFFSET])))
+#ifdef MEMO_SIZE
+    if ((size = metadata->size))
         return size;
 #endif
 
@@ -660,8 +664,8 @@ map_sizeof(rbtree *tree)
         size += value_bytes(pnode->value);
     }
 
-#ifdef MEMO_VALUE_BYTES
-    (((int *)(tree))[MEMO_OFFSET]) = size;
+#ifdef MEMO_SIZE
+    metadata->size = size;
 #endif
 
     return size;
@@ -686,9 +690,10 @@ mapinsert(Var map, Var key, Var value)
         free_var(map);
     }
 
-#ifdef MEMO_VALUE_BYTES
+#ifdef MEMO_SIZE
     /* reset the memoized size */
-    ((int *)(_new.v.tree))[MEMO_OFFSET] = 0;
+    var_metadata *metadata = ((var_metadata*)_new.v.tree) - 1;
+    metadata->size = 0;
 #endif
 
     rbnode node;
@@ -705,6 +710,16 @@ mapinsert(Var map, Var key, Var value)
 #endif
 
     return _new;
+}
+
+const rbnode *
+mapstrlookup(Var map, const char *key, Var *value, int case_matters)
+{
+    Var tmp;
+    tmp.type = TYPE_STR;
+    tmp.v.str = key;
+
+    return maplookup(map, tmp, value, case_matters);
 }
 
 const rbnode *
@@ -988,26 +1003,56 @@ bf_mapdelete(Var arglist, Byte next, void *vdata, Objid progr)
 {
     Var r;
     Var map = arglist.v.list[1];
-    Var key = arglist.v.list[2];
-
-    if (key.is_collection()) {
-        free_var(arglist);
-        return make_error_pack(E_TYPE);
-    }
+    Var key_arg = arglist.v.list[2];
 
     r = var_refcount(map) == 1 ? var_ref(map) : map_dup(map);
 
-#ifdef MEMO_VALUE_BYTES
+#ifdef MEMO_SIZE
     /* reset the memoized size */
-    ((int *)(r.v.tree))[MEMO_OFFSET] = 0;
+    var_metadata *metadata = ((var_metadata*)r.v.tree) - 1;
+    metadata->size = 0;
 #endif
 
-    rbnode node;
-    node.key = key;
-    if (!rberase(r.v.tree, &node)) {
-        free_var(r);
-        free_var(arglist);
-        return make_error_pack(E_RANGE);
+    if (key_arg.type == TYPE_LIST) {
+        /* Delete multiple keys */
+        int count = key_arg.v.list[0].v.num;
+        for (int i = 1; i <= count; i++) {
+            Var key = key_arg.v.list[i];
+            if (key.is_collection()) {
+                free_var(r);
+                free_var(arglist);
+                return make_error_pack(E_TYPE);
+            }
+            rbnode node;
+            node.key = key;
+            if (!rberase(r.v.tree, &node)) {
+                /* Key not found in map */
+                Stream *s = new_stream(100);
+                stream_add_string(s, "Key ");
+                unparse_value(s, key);
+                stream_add_string(s, " not found in map");
+                const char *msg = str_dup(stream_contents(s));
+                free_stream(s);
+                
+                free_var(r);
+                free_var(arglist);
+                return make_raise_pack(E_RANGE, msg, var_dup(key));
+            }
+        }
+    } else {
+        /* Delete single key */
+        if (key_arg.is_collection()) {
+            free_var(r);
+            free_var(arglist);
+            return make_error_pack(E_TYPE);
+        }
+        rbnode node;
+        node.key = key_arg;
+        if (!rberase(r.v.tree, &node)) {
+            free_var(r);
+            free_var(arglist);
+            return make_error_pack(E_RANGE);
+        }
     }
 
     free_var(arglist);

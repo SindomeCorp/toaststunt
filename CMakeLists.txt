@@ -1,9 +1,18 @@
-cmake_minimum_required(VERSION 3.11)
+cmake_minimum_required(VERSION 3.5)
 set(VERSION_MAJOR 2)
 set(VERSION_MINOR 7)
-set(VERSION_RELEASE 0)
-set(VERSION_EXT "_38")
+set(VERSION_RELEASE 3)
+set(VERSION_EXT "")
 project(ToastStunt VERSION ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_RELEASE} LANGUAGES CXX C)
+
+# Compile Options
+option(ONLY_32_BITS "Use 32-bit integers instead of 64-bit." OFF)
+option(USE_JEMALLOC "Use jemalloc (if available) for memory allocation." OFF)
+
+# Fall back to 32-bit mode if the target doesn't support 64-bit
+if( CMAKE_SIZEOF_VOID_P EQUAL 4 )
+    set(ONLY_32_BITS true)
+endif()
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/CMakeModules/")
 
@@ -16,6 +25,14 @@ find_package(gperf REQUIRED)
 EXECUTE_PROCESS( COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE )
 if(APPLE AND ${ARCHITECTURE} STREQUAL "arm64")
     set(APPLE_SILICON_FOUND 1)
+endif()
+
+# Check for a virtualized container
+if(EXISTS "/proc/1/cgroup")
+    file(READ "/proc/1/cgroup" CGROUPS)
+    string(REGEX MATCH ".*(docker|lxc).*" IN_A_CONTAINER ${CGROUPS})
+else()
+    set(IN_A_CONTAINER 0)
 endif()
 
 # Where to find header files
@@ -35,23 +52,15 @@ else()
     endif()
 endif()
 
-# Compile Options
-option(ONLY_32_BITS "Use 32-bit integers instead of 64-bit." OFF)
-
-# Fall back to 32-bit mode if the target doesn't support 64-bit
-if( CMAKE_SIZEOF_VOID_P EQUAL 4 )
-    set(ONLY_32_BITS true)
-endif()
-
 # Compiler Flags
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 17)
 
 # These flags are shared by the RELEASE and WARN build types.
 set(SHARED_COMPILE_FLAGS "-O3")
-if(NOT APPLE_SILICON_FOUND)
+if(NOT APPLE_SILICON_FOUND AND NOT IN_A_CONTAINER)
     set(SHARED_COMPILE_FLAGS "${SHARED_COMPILE_FLAGS} -march=native")
-else()
+elseif(APPLE_SILICON_FOUND)
     set(SHARED_COMPILE_FLAGS "${SHARED_COMPILE_FLAGS} -mcpu=apple-m1")
 endif()
 
@@ -135,15 +144,15 @@ add_custom_command(
 #                to modify the source files, so we have to do it before moo is defined. But we can't
 #                do the package setup UNTIL moo is defined.
 set(SQL_FOUND FALSE)
-IF(APPLE_SILICON_FOUND)
+if(APPLE_SILICON_FOUND)
     set(CMAKE_THREAD_LIBS_INIT "-lpthread")
     set(CMAKE_HAVE_THREADS_LIBRARY 1)
     set(CMAKE_USE_WIN32_THREADS_INIT 0)
     set(CMAKE_USE_PTHREADS_INIT 1)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
-ELSE()
+else()
     find_package(Threads REQUIRED)
-ENDIF()
+endif()
 find_package(Nettle REQUIRED)
 find_package(Argon2 REQUIRED)
 find_package(PCRE)
@@ -154,6 +163,15 @@ find_package(PQXX)
 find_package(MySQL)
 find_package(OpenSSL)
 find_package(Expat)
+
+if(USE_JEMALLOC)
+    find_library(JEMALLOC_LIBRARY NAMES jemalloc)
+    if(NOT JEMALLOC_LIBRARY)
+        message(WARNING "jemalloc library not found. Not using.")
+    else()
+        set(JEMALLOC_FOUND 1)
+    endif()
+endif()
 
 # Millions of source files
 set(src_CSRCS
@@ -304,6 +322,11 @@ if(OPENSSL_FOUND)
     target_link_libraries(moo ${OPENSSL_LIBRARIES})
 endif()
 
+if(JEMALLOC_FOUND)
+    include_directories(${JEMALLOC_INCLUDE_DIRS})
+    target_link_libraries(moo ${JEMALLOC_LIBRARY})
+endif()
+
 # Setup #defines as needed
 CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/src/include/config.h.cmake
     ${CMAKE_BINARY_DIR}/config.h)
@@ -318,3 +341,6 @@ endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C flags: ${CMAKE_C_FLAGS}")
 message(STATUS "CXX flags: ${CMAKE_CXX_FLAGS}")
+if(JEMALLOC_FOUND)
+    message(STATUS "Using jemalloc")
+endif()

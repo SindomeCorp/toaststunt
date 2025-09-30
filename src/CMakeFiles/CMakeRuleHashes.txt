@@ -1,0 +1,4 @@
+# Hashes of file build rules.
+db7f04089e92711eaf247d7322d24117 keywords.cc
+29d60b304e0df351e793106087ca0d9a parser.cc
+6c6d39863c5464104c1bc6f003ccddd7 version_src_dummy.h

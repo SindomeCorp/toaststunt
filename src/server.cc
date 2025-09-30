@@ -33,7 +33,8 @@
 #include <sstream>
 #include <fstream>
 #include <vector>
-
+#include <mutex>
+#include <getopt.h>
 #include <sys/types.h>      /* must be first on some systems */
 #include <signal.h>
 #include <stdarg.h>
@@ -78,7 +79,10 @@
 #include "background.h"
 #include "map.h"
 #include "pcre_moo.h" /* pcre shutdown */
-#include <getopt.h>
+
+#ifdef JEMALLOC_FOUND
+#include <jemalloc/jemalloc.h>
+#endif
 
 extern "C" {
 #include "dependencies/linenoise.h"
@@ -93,7 +97,7 @@ static const char *this_program;
 
 static std::stringstream shutdown_message;
 
-static bool shutdown_triggered = false;
+static std::atomic<bool> shutdown_triggered(false);
 static bool in_emergency_mode = false;
 
 static Var checkpointed_connections;
@@ -134,24 +138,25 @@ typedef struct shandle {
     Objid player;
     Objid listener;
     task_queue tasks;
-    std::atomic<bool> disconnect_me;
     Objid switched;
     bool outbound, binary;
     bool print_messages;
+    std::atomic<bool> disconnect_me;
 } shandle;
 
 static shandle *all_shandles = nullptr;
+std::recursive_mutex all_shandles_mutex;
 
 typedef struct slistener {
-    struct slistener *next, **prev;
-    network_listener nlistener;
-    Objid oid;          /* listen(OID, DESC, PRINT_MESSAGES, IPV6) */
     Var desc;
-    int print_messages;
-    bool ipv6;
+    struct slistener *next, **prev;
     const char *name;           // resolved hostname
     const char *ip_addr;        // 'raw' IP address
+    network_listener nlistener;
+    Objid oid;          /* listen(OID, DESC, PRINT_MESSAGES, IPV6) */
+    int print_messages;
     uint16_t port;             // listening port
+    bool ipv6;
 } slistener;
 
 static slistener *all_slisteners = nullptr;
@@ -159,8 +164,8 @@ static slistener *all_slisteners = nullptr;
 server_listener null_server_listener = {nullptr};
 
 struct pending_recycle {
-    struct pending_recycle *next;
     Var v;
+    struct pending_recycle *next;
 };
 
 static struct pending_recycle *pending_free = nullptr;
@@ -174,6 +179,7 @@ static Var pending_list = new_list(0);
 /* maplookup doesn't consume the key, so here are common map keys that
    are used by functions like listen() and open_network_connection() */
 static Var ipv6_key = str_dup_to_var("ipv6");
+static Var interface_key = str_dup_to_var("interface");
 #ifdef USE_TLS
 static Var tls_key = str_dup_to_var("TLS");
 #endif
@@ -181,9 +187,11 @@ static Var tls_key = str_dup_to_var("TLS");
 static void
 free_shandle(shandle * h)
 {
+    all_shandles_mutex.lock();
     *(h->prev) = h->next;
     if (h->next)
         h->next->prev = h->prev;
+    all_shandles_mutex.unlock();
 
     free_task_queue(h->tasks);
 
@@ -191,7 +199,7 @@ free_shandle(shandle * h)
 }
 
 static slistener *
-new_slistener(Objid oid, Var desc, int print_messages, enum error *ee, bool use_ipv6 USE_TLS_BOOL_DEF TLS_CERT_PATH_DEF)
+new_slistener(Objid oid, Var desc, int print_messages, enum error *ee, bool use_ipv6, const char *interface USE_TLS_BOOL_DEF TLS_CERT_PATH_DEF)
 {
     slistener *listener = (slistener *)mymalloc(sizeof(slistener), M_NETWORK);
     server_listener sl;
@@ -200,7 +208,7 @@ new_slistener(Objid oid, Var desc, int print_messages, enum error *ee, bool use_
     uint16_t port;
 
     sl.ptr = listener;
-    e = network_make_listener(sl, desc, &(listener->nlistener), &name, &ip_address, &port, use_ipv6 USE_TLS_BOOL TLS_CERT_PATH);
+    e = network_make_listener(sl, desc, &(listener->nlistener), &name, &ip_address, &port, use_ipv6, interface USE_TLS_BOOL TLS_CERT_PATH);
 
     if (ee)
         *ee = e;
@@ -390,7 +398,6 @@ handle_user_defined_signal(int sig)
     }
 
     free_var(result);
-    free_var(args);
 }
 
 static void
@@ -664,9 +671,9 @@ recycle_waifs(void)
 
     std::vector<Waif*> removals;
     for (auto &x : destroyed_waifs) {
-        if (destroyed_waifs[x.first] == false) {
+        if (x.second == false) {
             run_server_task(-1, Var::new_waif(x.first), waif_recycle_verb, new_list(0), "", nullptr);
-            destroyed_waifs[x.first] = true;
+            x.second = true;
             /* Flag it as destroyed. Now we just wait for the refcount to hit zero so we can free it. */
         }
         if (refcount(x.first) <= 0) {
@@ -689,13 +696,30 @@ recycle_waifs(void)
 void
 write_values_pending_finalization(void)
 {
-    dbio_printf("%" PRIdN " values pending finalization\n", pending_count);
+    /* In order to get an accurate count, we have to iterate through destroyed_waifs twice.
+       The first time to ascertain which waifs haven't already had their recycle verb called,
+       the second time to add them to the list. If this proves problematic, we might have to
+       trade off speed for some slightly increased memory usage with waif flags. However,
+       I really don't see any database having enough waifs pending recycling for this to make
+       any impact whatsoever. */
+
+    unsigned int pending_waif_count = 0;
+    for (auto &x : destroyed_waifs)
+        if (x.second == false)
+            pending_waif_count++;
+    
+    dbio_printf("%" PRIdN " values pending finalization\n", pending_count + pending_waif_count);
 
     struct pending_recycle *head = pending_head;
 
     while (head) {
         dbio_write_var(head->v);
         head = head->next;
+    }
+
+    for (auto &x : destroyed_waifs) {
+        if (x.second == false)
+            dbio_write_var(Var::new_waif(x.first));
     }
 }
 
@@ -732,7 +756,7 @@ main_loop(void)
 {
     int i;
 
-    /* First, queue anonymous objects */
+    /* First, queue anonymous objects and WAIFs */
     for (i = 1; i <= pending_list.v.list[0].v.num; i++) {
         Var v;
 
@@ -740,11 +764,20 @@ main_loop(void)
 
         /* in theory this could be any value... */
         /* in practice this will be an anonymous object... */
-        assert(TYPE_ANON == v.type);
+        /*... until now! It can also be a WAIF. */
+        assert(v.type == TYPE_ANON || v.type == TYPE_WAIF);
 
-        if (v.v.anon != nullptr)
-            queue_anonymous_object(var_ref(v));
+    switch (v.type) {
+        case TYPE_ANON:
+            if (v.v.anon != nullptr)
+                queue_anonymous_object(var_ref(v));
+            break;
+        case TYPE_WAIF:
+            if (v.v.waif != nullptr && destroyed_waifs.count(v.v.waif) == 0)
+                destroyed_waifs[v.v.waif] = false;
+        }
     }
+
     free_var(pending_list);
 
     /* Second, notify DB of disconnections for all checkpointed connections */
@@ -828,13 +861,16 @@ main_loop(void)
         {   /* Get rid of old un-logged-in or useless connections */
             int now = time(nullptr);
 
+            all_shandles_mutex.lock();
             for (h = all_shandles; h; h = nexth) {
                 Var v;
 
                 nexth = h->next;
 
-                if (nhandle_refcount(h->nhandle) > 1)
-                    continue;
+                /* If the nhandle refcount is > 1, a background thread is working with it.
+                 * We don't want to mess with it until that thread is finished. */
+                if (get_nhandle_refcount(h->nhandle) > 1)
+                  continue;
 
                 if (!h->outbound && h->connection_time == 0
                         && (get_server_option(h->listener, "connect_timeout", &v)
@@ -865,7 +901,7 @@ main_loop(void)
                                      "recycle_msg", "*** Recycled ***", 0);
                     network_close(h->nhandle);
                     free_shandle(h);
-                } else if (h->disconnect_me.load()) {
+                } else if (h->disconnect_me) {
                     call_notifier(h->player, h->listener,
                                   "user_disconnected");
                     lock_connection_name_mutex(h->nhandle);
@@ -886,6 +922,7 @@ main_loop(void)
                     h->switched = 0;
                 }
             }
+            all_shandles_mutex.unlock();
         }
     }
 
@@ -897,6 +934,8 @@ static shandle *
 find_shandle(Objid player)
 {
     shandle *h;
+
+    std::lock_guard<std::recursive_mutex> lock(all_shandles_mutex);
 
     for (h = all_shandles; h; h = h->next)
         if (h->player == player)
@@ -923,13 +962,13 @@ init_cmdline(int argc, char *argv[])
     cmdline_buflen = p - argv[0];
 }
 
-#define SERVER_CO_TABLE(DEFINE, H, VALUE, _)                \
-    DEFINE(binary, _, TYPE_INT, num,                    \
-           H->binary,                           \
-           {                                \
-                                            H->binary = is_true(VALUE);              \
-                                            network_set_connection_binary(H->nhandle, H->binary);    \
-           })                               \
+#define SERVER_CO_TABLE(DEFINE, H, VALUE, _)                             \
+    DEFINE(binary, _, TYPE_INT, num,                                     \
+           H->binary,                                                    \
+           {                                                             \
+                H->binary = is_true(VALUE);                              \
+                network_set_connection_binary(H->nhandle, H->binary);    \
+           })                                                            \
 
 static int
 server_set_connection_option(shandle * h, const char *option, Var value)
@@ -1272,19 +1311,23 @@ do_script_file(const char *path)
 {
     Var str;
     Var code = new_list(0);
-    std::ifstream file(path);
-    std::string line;
 
+    std::ifstream file(path);
     if (!file.is_open()) {
         panic_moo(strerror(errno));
     }
+
+    std::string line;
     while (std::getline(file, line)) {
         str = str_dup_to_var(raw_bytes_to_clean(line.c_str(), line.size()));
         code = listappend(code, str);
     }
-    if (errno) {
+
+    if (!file.eof()) {
         panic_moo(strerror(errno));
     }
+
+    file.close();
 
     run_do_start_script(code);
 }
@@ -1415,6 +1458,8 @@ server_new_connection(server_listener sl, network_handle nh, bool outbound)
     shandle *h = (shandle *)mymalloc(sizeof(shandle), M_NETWORK);
     server_handle result;
 
+    all_shandles_mutex.lock();
+
     h->next = all_shandles;
     h->prev = &all_shandles;
     if (all_shandles)
@@ -1433,6 +1478,8 @@ server_new_connection(server_listener sl, network_handle nh, bool outbound)
     h->binary = false;
     h->print_messages = l ? l->print_messages : !outbound;
 
+    all_shandles_mutex.unlock();
+
     if (l || !outbound) {
         new_input_task(h->tasks, "", 0, 0);
         /*
@@ -1445,19 +1492,19 @@ server_new_connection(server_listener sl, network_handle nh, bool outbound)
     }
 
     lock_connection_name_mutex(nh);
-    const char *connection_name = str_dup(network_connection_name(nh));
-    unlock_connection_name_mutex(nh);
 
     if (outbound) {
         oklog("CONNECT: #%" PRIdN " to %s [%s], port %i\n", h->player,
-              connection_name, network_ip_address(nh), network_port(nh));
+              network_connection_name(nh), network_ip_address(nh), network_port(nh));
     } else {
         oklog("ACCEPT: #%" PRIdN " on %s [%s], port %i from %s [%s], port %i\n", h->player,
               network_source_connection_name(nh), network_source_ip_address(nh),
-              network_source_port(nh), connection_name,
+              network_source_port(nh), network_connection_name(nh),
               network_ip_address(nh), network_port(nh));
     }
-    free_str(connection_name);
+
+    unlock_connection_name_mutex(nh);
+
     result.ptr = h;
     return result;
 }
@@ -1468,8 +1515,6 @@ server_refuse_connection(server_listener sl, network_handle nh)
     slistener *l = (slistener *)sl.ptr;
 
     lock_connection_name_mutex(nh);
-    const char *connection_name = str_dup(network_connection_name(nh));
-    unlock_connection_name_mutex(nh);
 
     if (l->print_messages)
         send_message(l->oid, nh, "server_full_msg",
@@ -1480,10 +1525,10 @@ server_refuse_connection(server_listener sl, network_handle nh)
 
     errlog("SERVER FULL: refusing connection on %s [%s], port %i from %s [%s], port %i\n",
            network_source_connection_name(nh), network_source_ip_address(nh),
-           network_source_port(nh), connection_name,
+           network_source_port(nh), network_connection_name(nh),
            network_ip_address(nh), network_port(nh));
 
-    free_str(connection_name);
+    unlock_connection_name_mutex(nh);
 }
 
 void
@@ -1529,13 +1574,27 @@ server_resume_input(Objid connection)
 }
 
 bool
-is_localhost(Objid connection)
+is_trusted_proxy(Objid connection)
 {
     shandle *existing_h = find_shandle(connection);
-    if (!existing_h)
+    Var proxies;
+
+    if (!existing_h) {
         return false;
-    else
-        return network_is_localhost(existing_h->nhandle);
+    } else if (!get_server_option(existing_h->listener, "trusted_proxies", &proxies) || proxies.type != TYPE_LIST) {
+        return false;
+    } else {
+        
+        int i;
+        const char *ip = network_ip_address(existing_h->nhandle);
+
+        for (i = 1; i <= proxies.v.list[0].v.num; i++) {
+            if (proxies.v.list[i].type == TYPE_STR && strcmp(ip, proxies.v.list[i].v.str) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
 }
 
 int
@@ -1575,7 +1634,10 @@ proxy_connected(Objid connection, char *command)
             }
             split = strtok(nullptr, " ");
         }
+        lock_connection_name_mutex(existing_h->nhandle);
         const char *old_name = str_dup(network_connection_name(existing_h->nhandle));   // rewrite is going to free this
+        unlock_connection_name_mutex(existing_h->nhandle);
+        
         int rw = rewrite_connection_name(existing_h->nhandle, destination, destination_port, source, source_port);
         if (rw != 0) {
             errlog("PROXY: Proxy rewrite failed.\n");
@@ -1611,14 +1673,15 @@ player_connected(Objid old_id, Objid new_id, bool is_newly_created)
          * latter only needs listener value.
          */
         Objid existing_listener = existing_h->listener;
+        
+        lock_connection_name_mutex(existing_h->nhandle);
         lock_connection_name_mutex(new_h->nhandle);
-        char *name1 = str_dup(network_connection_name(existing_h->nhandle));
         oklog("REDIRECTED: %s, was %s, now %s\n",
               object_name(new_id),
-              name1,
+              network_connection_name(existing_h->nhandle),
               network_connection_name(new_h->nhandle));
         unlock_connection_name_mutex(new_h->nhandle);
-        free_str(name1);
+        unlock_connection_name_mutex(existing_h->nhandle);
         if (existing_h->print_messages)
             send_message(existing_listener, existing_h->nhandle,
                          "redirect_from_msg",
@@ -1638,12 +1701,12 @@ player_connected(Objid old_id, Objid new_id, bool is_newly_created)
             call_notifier(new_id, new_h->listener, "user_connected");
         }
     } else {
-        char *full_conn_name = full_network_connection_name(new_h->nhandle);
+        lock_connection_name_mutex(new_h->nhandle);
         oklog("%s: %s on %s\n",
               is_newly_created ? "CREATED" : "CONNECTED",
               object_name(new_h->player),
-              full_conn_name);
-        free(full_conn_name);
+              full_network_connection_name(new_h->nhandle));
+        unlock_connection_name_mutex(new_h->nhandle);
         if (new_h->print_messages) {
             if (is_newly_created)
                 send_message(new_h->listener, new_h->nhandle, "create_msg",
@@ -1733,6 +1796,8 @@ write_active_connections(void)
     int count = 0;
     shandle *h;
 
+    all_shandles_mutex.lock();
+
     for (h = all_shandles; h; h = h->next)
         count++;
 
@@ -1740,6 +1805,8 @@ write_active_connections(void)
 
     for (h = all_shandles; h; h = h->next)
         dbio_printf("%" PRIdN " %" PRIdN "\n", h->player, h->listener);
+        
+    all_shandles_mutex.unlock();
 }
 
 int
@@ -1771,7 +1838,7 @@ read_active_connections(void)
         Var v;
 
         if (have_listeners) {
-            if (dbio_scanf("%d %d\n", &who, &listener) != 2) {
+            if (dbio_scanf("%" SCNdN "%" SCNdN "\n", &who, &listener) != 2) {
                 errlog("READ_ACTIVE_CONNECTIONS: Bad conn/listener pair.\n");
                 return 0;
             }
@@ -1842,6 +1909,7 @@ print_usage()
     fprintf(stderr, "\nNETWORKING OPTIONS\n");
     fprintf(stderr, "  %-20s %s\n", "-o, --outbound", "enable outbound network connections");
     fprintf(stderr, "  %-20s %s\n", "-O, --no-outbound", "disable outbound network connections");
+    fprintf(stderr, "  %-20s %s\n", "    --no-ipv6", "don't listen on IPv6 for default ports");
     fprintf(stderr, "  %-20s %s\n", "-4, --ipv4", "restrict IPv4 listeners to a specific address");
     fprintf(stderr, "  %-20s %s\n", "-6, --ipv6", "restrict IPv6 listeners to a specific address");
     fprintf(stderr, "  %-20s %s\n", "-r, --tls-cert", "TLS certificate to use");
@@ -1883,6 +1951,7 @@ main(int argc, char **argv)
     bool cmdline_key = false;
     bool cmdline_filedir = false;
     bool cmdline_execdir = false;
+    bool cmdline_noipv6 = false;
     //
 
     std::vector<uint16_t> initial_ports;
@@ -1903,6 +1972,7 @@ main(int argc, char **argv)
         {"clear-move",      no_argument,        nullptr,            'm'},
         {"outbound",        no_argument,        nullptr,            'o'},
         {"no-outbound",     no_argument,        nullptr,            'O'},
+        {"no-ipv6",         no_argument,        nullptr,            '3'},
         {"tls-port",        no_argument,        nullptr,            't'},
         {"ipv4",            required_argument,  nullptr,            '4'},
         {"ipv6",            required_argument,  nullptr,            '6'},
@@ -1981,6 +2051,12 @@ main(int argc, char **argv)
 #endif
             }
             break;
+            
+            case '3':                   /* --no-ipv6; disable initial IPv6 listeners */
+            {
+                cmdline_noipv6 = true;
+            }
+            break;
 
             case '4':                   /* --ipv4; restrict ipv4 listener */
             {
@@ -2055,7 +2131,7 @@ main(int argc, char **argv)
 
             case 'h':                   /* --help; show usage instructions */
                 print_usage();
-                break;
+                exit(1);
 
             default:
                 // Should we print usage here? It's pretty spammy...
@@ -2125,6 +2201,9 @@ main(int argc, char **argv)
     applog(LOG_INFO1, "STARTING: Version %s (%" PRIdN "-bit) of the ToastStunt/LambdaMOO server\n", server_version, SERVER_BITS);
     applog(LOG_INFO1, "          (Task timeouts measured in %s seconds.)\n",
            virtual_timer_available() ? "server CPU" : "wall-clock");
+#ifdef JEMALLOC_FOUND
+    applog(LOG_INFO1, "          (Using jemalloc)\n");
+#endif
     applog(LOG_INFO1, "          (Process id %" PRIdN ")\n", parent_pid);
     if (waif_conversion_type != _TYPE_WAIF)
         applog(LOG_WARNING, "(Using type '%i' for waifs; will convert to '%i' at next checkpoint)\n", waif_conversion_type, _TYPE_WAIF);
@@ -2152,6 +2231,8 @@ main(int argc, char **argv)
     }
 
     applog(LOG_NOTICE, "NETWORK: Outbound network connections %s.\n", outbound_network_enabled ? "enabled" : "disabled");
+    if (cmdline_noipv6)
+        applog(LOG_INFO2, "CMDLINE: Not listening for IPv6 connections on default ports.\n");
     if (cmdline_ipv4)
         applog(LOG_INFO2, "CMDLINE: IPv4 source address restricted to: %s.\n", bind_ipv4);
     if (cmdline_ipv6)
@@ -2189,9 +2270,9 @@ main(int argc, char **argv)
         for (auto &the_port : *ports)
         {
             desc.v.num = the_port;
-            for (int ip_type = 0; ip_type < 2; ip_type++)
+            for (int ip_type = 0; ip_type < (cmdline_noipv6 ? 1 : 2); ip_type++)
             {
-                if ((new_listener = new_slistener(SYSTEM_OBJECT, desc, 1, nullptr, ip_type TLS_PORT_TYPE TLS_CERT_PATH)) == nullptr)
+                if ((new_listener = new_slistener(SYSTEM_OBJECT, desc, 1, nullptr, ip_type, nullptr TLS_PORT_TYPE TLS_CERT_PATH)) == nullptr)
                     errlog("Error creating %s%s listener on port %i.\n", port_type == PORT_TLS ? "TLS " : "", ip_type == PROTO_IPv6 ? "IPv6" : "IPv4", the_port);
                 else
                     initial_listeners.push_back(new_listener);
@@ -2260,6 +2341,8 @@ main(int argc, char **argv)
         initial_listeners.shrink_to_fit();
 
         main_loop();
+
+        background_shutdown();
 
         network_shutdown();
     }
@@ -2376,6 +2459,61 @@ bf_memory_usage(Var arglist, Byte next, void *vdata, Objid progr)
 
     return make_var_pack(s);
 }
+
+#ifdef JEMALLOC_FOUND
+/* Returns a LIST of stats from jemalloc about memory usage.
+ * NOTE: jemalloc must have been compiled with stats enabled for this to work.
+ *       Otherwise it will just return all 0's.
+ */
+static package
+bf_malloc_stats(Var arglist, Byte next, void *vdata, Objid progr)
+{
+    free_var(arglist);
+
+    size_t sz;
+
+    // Update the cached statistics.
+    uint64_t epoch = 1;
+    sz = sizeof(uint64_t);
+    mallctl("epoch", &epoch, &sz, &epoch, sz);
+
+    size_t allocated, active, resident, metadata, mapped, allocated_large, active_large;
+    sz = sizeof(size_t);
+
+    if (mallctl("stats.allocated", &allocated, &sz, NULL, 0) != 0)
+        allocated = 0;
+
+    if (mallctl("stats.active", &active, &sz, NULL, 0) != 0)
+        active = 0;
+
+    if (mallctl("stats.resident", &resident, &sz, NULL, 0) != 0)
+        resident = 0;
+
+    if (mallctl("stats.metadata", &metadata, &sz, NULL, 0) != 0)
+        metadata = 0;
+
+    if (mallctl("stats.mapped", &mapped, &sz, NULL, 0) != 0)
+        mapped = 0;
+
+    if (mallctl("stats.allocated_large", &allocated_large, &sz, NULL, 0) != 0)
+        allocated_large = 0;
+
+    if (mallctl("stats.active_large", &active_large, &sz, NULL, 0) != 0)
+        active_large = 0;
+
+    Var s = new_list(7);
+    s.v.list[1] = Var::new_int(allocated);
+    s.v.list[2] = Var::new_int(active);
+    s.v.list[3] = Var::new_int(resident);
+    s.v.list[4] = Var::new_int(metadata);
+    s.v.list[5] = Var::new_int(mapped);
+    s.v.list[6] = Var::new_int(allocated_large);
+    s.v.list[7] = Var::new_int(active_large);
+
+    return make_var_pack(s);
+}
+#endif
+
 
 /* Return resource usage information from the operating system.
  * Values returned: {{load averages}, user time, system time, page reclaims, page faults, block input ops, block output ops, voluntary context switches, involuntary context switches, signals received
@@ -2527,7 +2665,7 @@ bf_open_network_connection(Var arglist, Byte next, void *vdata, Objid progr)
     Options: ipv6 -> INT, listener -> OBJ, tls -> INT, tls_verify -> INT */
 
     Var r;
-    enum error e;
+    package e;
     server_listener sl;
     slistener l;
     bool use_ipv6 = false;
@@ -2558,6 +2696,7 @@ bf_open_network_connection(Var arglist, Byte next, void *vdata, Objid progr)
 #ifdef USE_TLS
         if (maplookup(options, tls_key, &value, 0) != nullptr && is_true(value)) {
             if (!tls_ctx) {
+                var_ref(value);
                 free_var(arglist);
                 return make_raise_pack(E_PERM, "TLS is not enabled", value);
             }
@@ -2573,6 +2712,7 @@ bf_open_network_connection(Var arglist, Byte next, void *vdata, Objid progr)
 
         if (maplookup(options, listener_key, &value, 0) != nullptr) {
             if (value.type != TYPE_OBJ) {
+                var_ref(value);
                 free_var(arglist);
                 return make_raise_pack(E_TYPE, "listener should be an object", value);
             }
@@ -2591,7 +2731,7 @@ bf_open_network_connection(Var arglist, Byte next, void *vdata, Objid progr)
 
     e = network_open_connection(arglist, sl, use_ipv6 USE_TLS_BOOL);
     free_var(arglist);
-    if (e == E_NONE) {
+    if (e.u.raise.code.v.err == E_NONE) {
         /* The connection was successfully opened, implying that
          * server_new_connection was called, implying and a new negative
          * player number was allocated for the connection.  Thus, the old
@@ -2599,14 +2739,10 @@ bf_open_network_connection(Var arglist, Byte next, void *vdata, Objid progr)
          */
         r.type = TYPE_OBJ;
         r.v.obj = next_unconnected_player + 1;
-    } else {
-        r.type = TYPE_ERR;
-        r.v.err = e;
-    }
-    if (r.type == TYPE_ERR)
-        return make_error_pack(r.v.err);
-    else
         return make_var_pack(r);
+    } else {
+        return e;
+    }
 
 #else               /* !OUTBOUND_NETWORK */
 
@@ -2628,6 +2764,8 @@ bf_connected_players(Var arglist, Byte next, void *vdata, Objid progr)
     Var result;
 
     free_var(arglist);
+
+    all_shandles_mutex.lock();
     for (h = all_shandles; h; h = h->next)
         if ((show_all || h->connection_time != 0) && !h->disconnect_me.load())
             count++;
@@ -2642,6 +2780,7 @@ bf_connected_players(Var arglist, Byte next, void *vdata, Objid progr)
             result.v.list[count].v.obj = h->player;
         }
     }
+    all_shandles_mutex.unlock();
 
     return make_var_pack(result);
 }
@@ -2692,11 +2831,10 @@ bf_connection_name(Var arglist, Byte next, void *vdata, Objid progr)
     r.type = TYPE_STR;
     r.v.str = nullptr;
 
-    if (h && !h->disconnect_me.load()) {
+    if (h && !h->disconnect_me) {
+        lock_connection_name_mutex(h->nhandle);
         if (arglist.v.list[0].v.num == 1) {
-            lock_connection_name_mutex(h->nhandle);
             r.v.str = str_dup(network_connection_name(h->nhandle));
-            unlock_connection_name_mutex(h->nhandle);
         } else if (arglist.v.list[2].v.num == 1)
             r.v.str = str_dup(network_ip_address(h->nhandle));
         else {
@@ -2704,6 +2842,7 @@ bf_connection_name(Var arglist, Byte next, void *vdata, Objid progr)
             r.v.str = str_dup(full_conn_name);
             free(full_conn_name);
         }
+        unlock_connection_name_mutex(h->nhandle);
     }
 
     free_var(arglist);
@@ -2717,29 +2856,43 @@ bf_connection_name(Var arglist, Byte next, void *vdata, Objid progr)
 }
 
 void
-name_lookup_callback(Var arglist, Var * ret)
+name_lookup_cleanup(void *extra_data)
+{
+    network_handle nh;
+    nh.ptr = extra_data;
+
+    decrement_nhandle_refcount(nh);
+}
+
+void
+name_lookup_callback(Var arglist, Var *ret, void *extra_data)
 {
     int nargs = arglist.v.list[0].v.num;
     Objid who = arglist.v.list[1].v.obj;
     shandle *h = find_shandle(who);
     bool rewrite_connect_name = nargs > 1 && is_true(arglist.v.list[2]);
 
-    if (!h || h->disconnect_me.load())
+    network_handle nh;
+    nh.ptr = extra_data;
+
+    if (!h || h->disconnect_me)
         make_error_map(E_INVARG, "Invalid connection", ret);
     else
     {
         const char *name;
         int status = lookup_network_connection_name(h->nhandle, &name);
-        *ret = str_dup_to_var(name);
 
-        if (rewrite_connect_name && status == 0)
-            if (network_name_lookup_rewrite(who, name) != 0)
-                make_error_map(E_INVARG, "Failed to rewrite connection name.", ret);
+        /* If the server is shutting down, this is meaningless and creates
+         * a bit of a mess anyway. So don't bother continuing. */
+        if (!shutdown_triggered.load()) {
+            ret->type = TYPE_STR;
+            ret->v.str = name;
 
-        free_str(name);
+            if (rewrite_connect_name && status == 0)
+                if (network_name_lookup_rewrite(who, name, nh) != 0)
+                    make_error_map(E_INVARG, "Failed to rewrite connection name.", ret);
+        }
     }
-    if (h)
-        decrement_nhandle_refcount(h->nhandle);
 }
 
 static package
@@ -2753,16 +2906,14 @@ bf_name_lookup(Var arglist, Byte next, void *vdata, Objid progr)
        under the other threads. */
     shandle *h = find_shandle(arglist.v.list[1].v.obj);
 
-    if (!h || h->disconnect_me.load()) {
+    if (!h || h->disconnect_me) {
         free_var(arglist);
         return make_error_pack(E_INVARG);
     }
 
     increment_nhandle_refcount(h->nhandle);
 
-    char *human_string = nullptr;
-    asprintf(&human_string, "name_lookup for #%" PRIdN "", arglist.v.list[1].v.obj);
-    return background_thread(name_lookup_callback, &arglist, human_string);
+    return background_thread(name_lookup_callback, &arglist, (void*)h->nhandle.ptr, name_lookup_cleanup);
 }
 
 static package
@@ -2899,23 +3050,26 @@ bf_connection_info(Var arglist, Byte next, void *vdata, Objid progr)
     static Var dest_ip =  str_dup_to_var("destination_ip");
     static Var dest_port =  str_dup_to_var("destination_port");
     static Var protocol =   str_dup_to_var("protocol");
+    static Var is_outbound = str_dup_to_var("outbound");
 
     network_handle nh = h->nhandle;
 
-    Var ret = new_map();
-    ret = mapinsert(ret, var_ref(src_addr), str_ref_to_var(network_source_connection_name(nh)));
-    ret = mapinsert(ret, var_ref(src_port), Var::new_int(network_source_port(nh)));
-    ret = mapinsert(ret, var_ref(src_ip), str_ref_to_var(network_source_ip_address(nh)));
     lock_connection_name_mutex(nh);
-    ret = mapinsert(ret, var_ref(dest_addr), str_ref_to_var(network_connection_name(nh)));
-    unlock_connection_name_mutex(nh);
+
+    Var ret = new_map();
+    ret = mapinsert(ret, var_ref(src_addr), str_dup_to_var(network_source_connection_name(nh)));
+    ret = mapinsert(ret, var_ref(src_port), Var::new_int(network_source_port(nh)));
+    ret = mapinsert(ret, var_ref(src_ip), str_dup_to_var(network_source_ip_address(nh)));
+    ret = mapinsert(ret, var_ref(dest_addr), str_dup_to_var(network_connection_name(nh)));
     ret = mapinsert(ret, var_ref(dest_port), Var::new_int(network_port(nh)));
-    ret = mapinsert(ret, var_ref(dest_ip), str_ref_to_var(network_ip_address(nh)));
+    ret = mapinsert(ret, var_ref(dest_ip), str_dup_to_var(network_ip_address(nh)));
     ret = mapinsert(ret, var_ref(protocol), str_dup_to_var(network_protocol(nh)));
+    ret = mapinsert(ret, var_ref(is_outbound), Var::new_int(h->outbound));
 #ifdef USE_TLS
     ret = mapinsert(ret, var_ref(tls_key), tls_connection_info(nh));
 #endif
 
+    unlock_connection_name_mutex(nh);
     free_var(arglist);
     return make_var_pack(ret);
 }
@@ -2942,6 +3096,7 @@ bf_listen(Var arglist, Byte next, void *vdata, Objid progr)
     enum error e = E_NONE;
     slistener *l = nullptr;
     char error_msg[100];
+    const char *interface = nullptr;
 #ifdef USE_TLS
     bool use_tls = false;
     const char *certificate_path = nullptr;
@@ -2994,6 +3149,9 @@ bf_listen(Var arglist, Byte next, void *vdata, Objid progr)
 
         if (maplookup(options, print_messages_key, &value, 0) != nullptr && is_true(value))
             print_messages = 1;
+
+        if (maplookup(options, interface_key, &value, 0) != nullptr && value.type == TYPE_STR)
+            interface = value.v.str;
     }
 
     if (e == E_NONE) {
@@ -3003,7 +3161,7 @@ bf_listen(Var arglist, Byte next, void *vdata, Objid progr)
         } else if (!valid(oid) || find_slistener(desc, ipv6)) {
             e = E_INVARG;
             sprintf(error_msg, "Invalid argument");
-        } else if (!(l = new_slistener(oid, desc, print_messages, &e, ipv6 USE_TLS_BOOL TLS_CERT_PATH))) {
+        } else if (!(l = new_slistener(oid, desc, print_messages, &e, ipv6, interface USE_TLS_BOOL TLS_CERT_PATH))) {
             sprintf(error_msg, unparse_error(e));
             /* Do nothing; e is already set */
         } else if (!start_listener(l)) {
@@ -3060,7 +3218,7 @@ bf_listeners(Var arglist, Byte next, void *vdata, Objid progr)
 // Save the keys for later
     static const Var object = str_dup_to_var("object");
     static const Var port = str_dup_to_var("port");
-    static const Var print = str_dup_to_var("print_messages");
+    static const Var print = str_dup_to_var("print-messages");
 
     for (l = all_slisteners; l; l = l->next) {
         if (!find_listener || equality(find, (find.type == TYPE_OBJ) ? Var::new_obj(l->oid) : l->desc, 0)) {
@@ -3069,6 +3227,7 @@ bf_listeners(Var arglist, Byte next, void *vdata, Objid progr)
             entry = mapinsert(entry, var_ref(port), var_ref(l->desc));
             entry = mapinsert(entry, var_ref(print), Var::new_int(l->print_messages));
             entry = mapinsert(entry, var_ref(ipv6_key), Var::new_int(l->ipv6));
+            entry = mapinsert(entry, var_ref(interface_key), str_dup_to_var(l->name));
 #ifdef USE_TLS
             entry = mapinsert(entry, var_ref(tls_key), Var::new_int(nlistener_is_tls(l->nlistener.ptr)));
 #endif
@@ -3105,6 +3264,11 @@ bf_buffered_output_length(Var arglist, Byte next, void *vdata, Objid progr)
     return make_var_pack(r);
 }
 
+bool is_shutdown_triggered()
+{
+    return shutdown_triggered;
+}
+
 void
 register_server(void)
 {
@@ -3112,6 +3276,9 @@ register_server(void)
     register_function("renumber", 1, 1, bf_renumber, TYPE_OBJ);
     register_function("reset_max_object", 0, 0, bf_reset_max_object);
     register_function("memory_usage", 0, 0, bf_memory_usage);
+#ifdef JEMALLOC_FOUND
+    register_function("malloc_stats", 0, 0, bf_malloc_stats);
+#endif
     register_function("usage", 0, 0, bf_usage);
     register_function("panic", 0, 1, bf_panic, TYPE_STR);
     register_function("shutdown", 0, 1, bf_shutdown, TYPE_STR);

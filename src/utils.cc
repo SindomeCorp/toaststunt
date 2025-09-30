@@ -152,7 +152,7 @@ complex_free_var(Var v)
                 free_str(v.v.str);
             break;
         case TYPE_LIST:
-            if (v.v.list != emptylist.v.list && delref(v.v.list) == 0) {
+            if (delref(v.v.list) == 0) {
                 destroy_list(v);
                 gc_set_color(v.v.list, GC_BLACK);
                 if (!gc_is_buffered(v.v.list))
@@ -224,7 +224,7 @@ complex_free_var(Var v)
                 free_str(v.v.str);
             break;
         case TYPE_LIST:
-            if (v.v.list != emptylist.v.list && delref(v.v.list) == 0)
+            if (delref(v.v.list) == 0)
                 destroy_list(v);
             break;
         case TYPE_MAP:
@@ -458,7 +458,7 @@ equality(Var lhs, Var rhs, int case_matters)
             case TYPE_STR:
                 if (lhs.v.str == rhs.v.str)
                     return 1;
-#ifdef MEMO_STRLEN
+#ifdef MEMO_SIZE
                 else if (memo_strlen(lhs.v.str) != memo_strlen(rhs.v.str))
                     return 0;
 #endif /* memo_strlen */
