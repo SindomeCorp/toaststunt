@@ -12,6 +12,7 @@
 #include <vector>
 #include <string>
 #include <stdexcept>
+#include <cstdlib>
 
 #include "background.h"
 #include "functions.h"
@@ -576,6 +577,12 @@ query_callback_adapter(Var a, Var* b, void* extra)
     query_callback(a, b);
 }
 
+static void
+free_human_string(void *p)
+{
+    free(p);
+}
+
 static package
 bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
 {
@@ -612,7 +619,7 @@ bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
     asprintf(&human_string, "sql query: %s", arglist.v.list[2].v.str);
 
     // Use adapter to satisfy new background_thread signature.
-    return background_thread(query_callback_adapter, &arglist, human_string);  
+    return background_thread(query_callback_adapter, &arglist, human_string, free_human_string);
 }
 
 static package
