@@ -218,6 +218,13 @@ class SQLSessionPool {
             std::unique_lock<std::mutex> lock(connections_mutex);
 
             DLOG("release connection: post mutex release\n");
+            /* oklog("in release connection\n"); */
+            std::unique_lock<std::mutex> lock(connections_mutex);
+
+            /* oklog("release connection: post mutex relesae\n"); */
+            // We're over connection cap, release to get back to cap.
+            /* oklog("SQL_SOFT_MAX_CONNECTIONS: %d \n", SQL_SOFT_MAX_CONNECTIONS); */
+            /* oklog("calling session->is_healthy\n"); */
             try {
                 (void)session->is_healthy();
             } catch (...) {
@@ -226,9 +233,11 @@ class SQLSessionPool {
 
             if (size() > SQL_SOFT_MAX_CONNECTIONS || !session->is_healthy()) {
                 DLOG("expire_connection(session) (over cap or unhealthy)\n");
+
                 expire_connection(session);
                 return;
             }
+
             DLOG("Normal release: set_connection_idle\n");
             set_connection_idle(session);
         }
@@ -236,6 +245,7 @@ class SQLSessionPool {
         void expire_connection(SQLSession* session) {
             if (!session) return;
             DLOG("in expire_connection\n");
+
             if (auto it = connections_busy.find(session); it != connections_busy.end()) {
                 it->second->wait();
                 it->second->shutdown();
@@ -267,14 +277,17 @@ class SQLSessionPool {
         }
 
         std::size_t size() const {
+
             return size_idle() + size_busy();
         }
 
         std::size_t size_idle() const {
+
             return connections_idle.size();
         }
         
         std::size_t size_busy() const {
+
             return connections_busy.size();
         }
 
@@ -296,6 +309,7 @@ class SQLSessionPool {
                 return item.first;
             }
 
+
             DLOG("  creating new connection\n");
             auto connection = create_connection();
             DLOG(" done creating connection\n");
@@ -303,6 +317,7 @@ class SQLSessionPool {
             DLOG(" setting result\n");
             connections_idle[result] = std::move(connection);
             DLOG(" finished setting result, returning result\n");
+
             return result;
         }
 
@@ -441,6 +456,7 @@ class PostgreSQLSessionPool: public SQLSessionPool {
     public:
         explicit PostgreSQLSessionPool(std::unique_ptr<Uri> uri) : SQLSessionPool(std::move(uri)) { }
     protected:
+
         std::unique_ptr<SQLSession> create_connection() override {
             DLOG("PostgreSQLSessionPool create_connection\n");
             return std::make_unique<PostgreSQLSession>(connection_uri.get());
@@ -535,7 +551,6 @@ query_callback(const Var arglist, Var *ret)
                 } else {
                     session->query(query, arglist.v.list[3].v.list, ret);
                 }
-
                 pool->release_connection(session);
                 session = nullptr;
                 break;
