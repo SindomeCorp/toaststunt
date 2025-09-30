@@ -40,7 +40,7 @@
 #include <mutex>   // std::once_flag, std::call_once
 
 // SET THIS TO FALSE FOR PROD!  
-static bool debugging = true;  // Set to false to disable local logs
+static bool debugging = false;  // Set to false to disable local logs
 #define DLOG(...) do { if (debugging) oklog(__VA_ARGS__); } while (0)
 
 /* Strip newlines for MOO strings (tabs instead). */
