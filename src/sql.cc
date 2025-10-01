@@ -1,6 +1,6 @@
 /*
  * sql server modification
- * 
+ *
  * brief: Code to support SQL database connections in MOOcode.
  */
 
@@ -40,8 +40,8 @@
 #include <pcre.h>
 #include <mutex>   // std::once_flag, std::call_once
 
-// SET THIS TO FALSE FOR PROD!  
-static bool debugging = false;  // Set to false to disable local logs, which is what it should be in prod
+// SET THIS TO FALSE FOR PROD!
+static bool debugging = true;  // Set to false to disable local logs in prod
 #define DLOG(...) do { if (debugging) oklog(__VA_ARGS__); } while (0)
 
 /* Strip newlines for MOO strings (tabs instead). */
@@ -51,6 +51,15 @@ static void sanitize_string_for_moo(char *string)
     for (char *p = string; *p; ++p) {
         if (*p == '\n') *p = '\t';
     }
+}
+
+/* Return a Var created from an exception message, sanitized. */
+static Var error_to_var_from_exception(const std::exception &e)
+{
+    const char *what = e.what();
+    std::string msg = what ? what : "Unknown error";
+    for (auto &ch : msg) if (ch == '\n') ch = '\t';
+    return str_dup_to_var(msg.c_str());
 }
 
 /* Convert a string into an appropriate MOO Var. */
@@ -172,9 +181,9 @@ class Uri {
 class SQLSession {
     public:
         virtual void query(
-            std::string statement, 
-            Var* bind, 
-            Var* ret, 
+            std::string statement,
+            Var* bind,
+            Var* ret,
             unsigned char options = 0)      = 0;
         virtual void shutdown()             = 0;
         virtual bool is_healthy()           = 0;
@@ -201,15 +210,15 @@ class SQLSessionPool {
             DLOG("DLOG in SQLSessionPool get_connection\n");
             auto connection = this->get_or_create_connection();
             DLOG("done calling get_or_create_connection\n");
-            
+
             if (connection == nullptr) {
                 DLOG("returning connection\n");
                 return connection;
             }
 
-            DLOG("setting connection busy");
+            DLOG("setting connection busy\n");
             set_connection_busy(connection);
-            DLOG("returning connection");
+            DLOG("returning connection\n");
             return connection;
         }
 
@@ -218,14 +227,16 @@ class SQLSessionPool {
             DLOG("in release connection\n");
             std::unique_lock<std::mutex> lock(connections_mutex);
 
-            DLOG("release connection: post mutex release\n");
+            DLOG("release connection: post mutex acquire\n");
+            bool healthy = false;
             try {
-                (void)session->is_healthy();
+                healthy = session->is_healthy();
             } catch (...) {
                 oklog("is_healthy() threw; treating as unhealthy.\n");
             }
-
-            if (size() > SQL_SOFT_MAX_CONNECTIONS || !session->is_healthy()) {
+            DLOG("pool size=%zu idle=%zu busy=%zu cap=%d healthy=%d\n",
+     size(), size_idle(), size_busy(), SQL_SOFT_MAX_CONNECTIONS, healthy ? 1 : 0);
+            if (size() > SQL_SOFT_MAX_CONNECTIONS || !healthy) {
                 DLOG("expire_connection(session) (over cap or unhealthy)\n");
                 expire_connection(session);
                 return;
@@ -253,7 +264,7 @@ class SQLSessionPool {
 
         void stop() {
             DLOG("in stop\n");
-            std::unique_lock<std::mutex> lock(connections_mutex);            
+            std::unique_lock<std::mutex> lock(connections_mutex);
             for (auto&& connection : connections_idle) {
                 connection.second->shutdown();
             }
@@ -274,7 +285,7 @@ class SQLSessionPool {
         std::size_t size_idle() const {
             return connections_idle.size();
         }
-        
+
         std::size_t size_busy() const {
             return connections_busy.size();
         }
@@ -282,34 +293,38 @@ class SQLSessionPool {
         virtual ~SQLSessionPool() {
             this->stop();
         }
-    
+
     protected:
         virtual std::unique_ptr<SQLSession> create_connection() = 0;
 
+        // Safe iteration: avoid invalidation while pruning unhealthy connections.
         SQLSession* get_or_create_connection() {
-            DLOG("in get_or_create_connection1\n");
-            for (auto&& item : this->connections_idle) {
-                if (!item.first->is_healthy()) {
-                    DLOG("  expiring unhealthy connection\n");
-                    expire_connection(item.first);
+            DLOG("in get_or_create_connection\n");
+
+            for (auto it = connections_idle.begin(); it != connections_idle.end(); ) {
+                SQLSession* sess = it->first;
+                bool healthy = false;
+                try { healthy = sess->is_healthy(); } catch (...) { healthy = false; }
+                if (!healthy) {
+                    DLOG("  expiring unhealthy idle connection\n");
+                    // capture then increment iterator before mutation
+                    auto to_expire = it++;
+                    expire_connection(to_expire->first);
                     continue;
                 }
-                return item.first;
+                return sess; // found healthy idle connection
             }
 
             DLOG("  creating new connection\n");
             auto connection = create_connection();
-            DLOG(" done creating connection\n");
             auto result = connection.get();
-            DLOG(" setting result\n");
             connections_idle[result] = std::move(connection);
-            DLOG(" finished setting result, returning result\n");
+            DLOG("  created and stored new idle connection\n");
             return result;
         }
 
         void set_connection_busy(SQLSession* session) {
             if (auto it = connections_idle.find(session); it != connections_idle.end()) {
-                // C++17 extract is OK now that we’re on C++17
                 auto node = connections_idle.extract(it);
                 connections_busy.insert(std::move(node));
             }
@@ -321,7 +336,7 @@ class SQLSessionPool {
                 connections_idle.insert(std::move(node));
             }
         }
-    
+
     protected:
         mutable std::mutex connections_mutex;
         std::unordered_map<SQLSession*, std::unique_ptr<SQLSession>> connections_idle;
@@ -333,7 +348,7 @@ class PostgreSQLSession: public SQLSession {
     public:
         explicit PostgreSQLSession(Uri* uri) {
             DLOG("PostgreSQLSession ctor\n");
-            connection_string = uri->full_string;    
+            connection_string = uri->full_string;
             connection = std::make_unique<pqxx::connection>(connection_string);
             DLOG("PostgreSQLSession ctor done\n");
         }
@@ -344,10 +359,10 @@ class PostgreSQLSession: public SQLSession {
             try {
                 pqxx::work txn {*connection.get()};
                 pqxx::result res;
-                
+
                 if (bind != nullptr) {
                     pqxx::params p;
-                    for (int bind_col=1; bind_col <= bind->v.num; bind_col++) {
+                    for (int bind_col = 1; bind_col <= bind->v.num; bind_col++) {
                         switch (bind[bind_col].type) {
                             case TYPE_STR:
                                 p.append(pqxx::to_string(bind[bind_col].v.str));
@@ -363,7 +378,6 @@ class PostgreSQLSession: public SQLSession {
                                 p.append(bind[bind_col].v.truth);
                                 break;
                             default:
-                                // Unknown type -> NULL
                                 p.append(nullptr);
                                 break;
                         }
@@ -373,12 +387,12 @@ class PostgreSQLSession: public SQLSession {
                     res = txn.exec(statement);
                 }
 
-                // Get results
+                // Build MOO list-of-rows -> list-of-columns
                 *ret = new_list(0);
                 for (auto row: res) {
                     Var rv = new_list(0);
                     for (auto col: row) {
-                        char *str = (char*)col.c_str();
+                        char *str = (char*) col.c_str();  // libpqxx guarantees buffer valid while result lives
                         Var column;
 
                         if (!(options & SQL_PARSE_TYPES)) {
@@ -399,8 +413,9 @@ class PostgreSQLSession: public SQLSession {
                 txn.commit();
             } catch (const pqxx::broken_connection &) {
                 this->broken_connection = true;
-                throw;
+                throw;  // caller will handle retry/expiration
             } catch (const std::exception &) {
+                // Conservatively mark broken; safer for long-lived daemon.
                 this->broken_connection = true;
                 throw;
             }
@@ -409,14 +424,11 @@ class PostgreSQLSession: public SQLSession {
         void shutdown() override {
             try {
                 if (connection && connection->is_open()) {
-                    // In libpqxx 7.x, close() is public; in 6.x it was protected.
-                    // We try to close, then reset regardless to ensure release.
                     connection->close();
                 }
             } catch (...) {
                 // ignore; we’re tearing down
             }
-            // Always reset the pointer to release resources.
             connection.reset();
         }
 
@@ -496,7 +508,7 @@ static SQLSessionPool* create_session_pool(std::string connection_string, unsign
 }
 
 static SQLSessionPool* get_or_create_session_pool(
-    std::string connection_string, 
+    std::string connection_string,
     unsigned char options = SQL_PARSE_TYPES | SQL_PARSE_OBJECTS
 )
 {
@@ -539,32 +551,36 @@ query_callback(const Var arglist, Var *ret)
 
                 pool->release_connection(session);
                 session = nullptr;
-                break;
-            } catch (const pqxx::sql_error &) {
+                break; // success
+            } catch (const pqxx::sql_error &e) {
                 if (session) { pool->release_connection(session); session = nullptr; }
+                // SQL syntax/constraint/etc. — do not retry; bubble up.
                 throw;
             } catch (const pqxx::broken_connection &) {
-                if (session) { pool->release_connection(session); session = nullptr; }
-                throw;
-            } catch (const std::runtime_error &) {
-                if (tries >= 3) {
-                    if (session) { pool->release_connection(session); session = nullptr; }
-                    throw;
+                if (session) {
+                    session->set_broken_connection_true();
+                    pool->release_connection(session);
+                    session = nullptr;
                 }
+                if (tries >= 3) throw; // bounded retry
+                DLOG("Retrying after broken_connection (attempt %d)\n", tries);
+                continue; // get a fresh connection
+            } catch (const std::runtime_error &) {
                 if (session) {
                     pool->release_connection(session);
                     session = nullptr;
                 }
-            } 
-        }        
-    } catch (const pqxx::broken_connection& re) {
-        auto err = (char*)re.what();
-        sanitize_string_for_moo(err);
-        *ret = str_dup_to_var(err);
-    } catch (const std::exception& re) {
-        auto err = (char*)re.what();
-        sanitize_string_for_moo(err);
-        *ret = str_dup_to_var(err);
+                if (tries >= 3) throw;
+                DLOG("Retrying after runtime_error (attempt %d)\n", tries);
+                continue;
+            }
+        }
+    } catch (const pqxx::broken_connection &e) {
+        *ret = error_to_var_from_exception(e);
+    } catch (const pqxx::sql_error &e) {
+        *ret = error_to_var_from_exception(e);
+    } catch (const std::exception &e) {
+        *ret = error_to_var_from_exception(e);
     } catch(...) {
         *ret = str_dup_to_var("Unknown failure encountered.");
     }
@@ -651,25 +667,25 @@ bf_sql_open_connection (Var arglist, Byte next, void *vdata, Objid progr)
     }
 
     Var ret;
-    ret.type = TYPE_INT;
+    ret.type = TYPE_INT; // will set below on success
+
     try {
-        std::string connection_string = arglist.v.list[1].v.str;        
-        
+        std::string connection_string = arglist.v.list[1].v.str;
+
         unsigned char options = 0;
         if (arglist.v.list[0].v.num >= 2)
-            options = arglist.v.list[2].v.num;        
+            options = arglist.v.list[2].v.num;
+
         auto pool = get_or_create_session_pool(connection_string, options);
 
-        free_var(arglist); 
+        free_var(arglist);
         ret.v.num = pool->handle_id;
         return make_var_pack(ret);
     } catch (const std::exception &e) {
         free_var(arglist);
-        free_var(ret);
         return make_raise_pack(E_INVARG, e.what(), zero);
     } catch (...) {
         free_var(arglist);
-        free_var(ret);
         return make_raise_pack(E_INVARG, "An unknown error has occurred.", zero);
     }
 }
@@ -703,12 +719,10 @@ bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
     } catch (const std::exception &e) {
         oklog("SQL ERROR #1\n");
         free_var(arglist);
-        free_var(ret);
         return make_raise_pack(E_INVARG, e.what(), zero);
     } catch (...) {
         oklog("SQL ERROR #2\n");
         free_var(arglist);
-        free_var(ret);
         return make_raise_pack(E_INVARG, "An unknown error has occurred.", zero);
     }
 }
@@ -737,6 +751,7 @@ bf_sql_info(Var arglist, Byte next, void *vdata, Objid progr)
     ret = mapinsert(ret, str_dup_to_var("sanitize_strings"), Var::new_int(pool->options & SQL_SANITIZE_STRINGS ? 1 : 0));
     ret = mapinsert(ret, str_dup_to_var("pool_size"), Var::new_int(pool->size()));
 
+    free_var(arglist);
     return make_var_pack(ret);
 }
 
