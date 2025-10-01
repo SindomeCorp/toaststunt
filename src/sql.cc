@@ -544,9 +544,9 @@ query_callback(const Var arglist, Var *ret)
                 if (!session) throw std::runtime_error("Failed to get SQL session.");
 
                 if (nargs < 3 || arglist.v.list[3].v.num < 1) {
-                    session->query(query, nullptr, ret);
+                    session->query(query, nullptr, ret, pool->options);
                 } else {
-                    session->query(query, arglist.v.list[3].v.list, ret);
+                    session->query(query, arglist.v.list[3].v.list, ret, pool->options);
                 }
 
                 pool->release_connection(session);
