@@ -103,7 +103,7 @@ namespace {
 
     // Named groups: scheme, user, pass, host, port, path, params
     static const char* const URI_PATTERN =
-        R"((?<scheme>[^:]+):\/\/(?:(?:(?<user>[^:]+):(?<pass>[^@]+))(?=@)@)?(?<host>[^?:/]*)(?::(?<port>\d+))?(?:\/(?<path>[^?]+))\?(?<params>.+))";
+        R"((?<scheme>[^:]+):\/\/(?:(?:(?<user>[^:]+):(?<pass>[^@]+))(?=@)@)?(?<host>[^?:/]*)(?::(?<port>\d+))?(?:\/(?<path>[^?]*))?(?:\?(?<params>.*))?)";
 
     static void init_uri_regex() {
         const char* err = nullptr;
@@ -163,6 +163,12 @@ class Uri {
             user   = get_named_group(subject, ovec, rc, "user");
             pass   = get_named_group(subject, ovec, rc, "pass");
             host   = get_named_group(subject, ovec, rc, "host");
+
+            if (scheme.empty() || host.empty()) {
+                throw std::runtime_error("Failed to parse URI: missing scheme or host.");
+            }
+
+            // Optional components: allow empty path/query when absent in the URI.
             path   = get_named_group(subject, ovec, rc, "path");
             params = get_named_group(subject, ovec, rc, "params");
 
