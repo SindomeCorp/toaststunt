@@ -51,37 +51,45 @@ PostgreSQL
 ----------
 
 ### **Debian/Ubuntu/WSL**
-As of 3/28/22 this was: 6.4.5, so it needs to be manually compiled.
+`libpqxx` from distro packages may be too old or incompatible with newer toolchains.
+Build a modern `7.x` release manually.
 ```bash
+sudo apt update
+sudo apt install -y libpq-dev libpq5 cmake g++ make
+
+cd /tmp
+rm -rf libpqxx
 git clone https://github.com/jtv/libpqxx.git
 cd libpqxx
-git checkout 7.6
-sudo apt install libpq-dev libpq5
-cmake .
-make
-sudo make install
+git checkout 7.10.1
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
+sudo cmake --install build
+sudo ldconfig
 ```
+Notes:
+- Avoid `7.6.x` with CMake 4.x; those tags can fail to configure.
+- If `7.10.1` is unavailable, use the newest `7.x` tag:
+  `git tag -l "7.*" | tail -n 20`
 
 ### **Gentoo**
-As of 3/28/22 this was: 7.4.1, so it needs to be manually compiled.
 ```bash
 git clone https://github.com/jtv/libpqxx.git
 cd libpqxx
-git checkout 7.6
-cmake .
-make
-sudo make install
+git checkout 7.10.1
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
+sudo cmake --install build
 ```
 
 ### **FreeBSD**
-As of 3/28/22 this was: 7.2.0, so it needs to be manually compiled.
 ```bash
 git clone https://github.com/jtv/libpqxx.git
 cd libpqxx
-git checkout 7.6
-cmake .
-make
-sudo make install
+git checkout 7.10.1
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(sysctl -n hw.ncpu)"
+sudo cmake --install build
 ```
 
 SQLiteV3

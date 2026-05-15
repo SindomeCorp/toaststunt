@@ -21,6 +21,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include "bf_register.h"
 #include "config.h"
@@ -33,6 +34,8 @@
 
 static FILE *log_file = nullptr;
 static const char *log_file_name = nullptr;
+static FILE *trace_log_file = nullptr;
+static const char *trace_log_file_name = nullptr;
 
 void
 set_log_file(FILE * f)
@@ -56,6 +59,71 @@ const char*
 get_log_file_name()
 {
     return log_file_name;
+}
+
+int
+set_trace_log_file_name(const char *name)
+{
+    if (!name)
+        return 0;
+
+    size_t len = strlen(name) + 7; /* ".trace" + NUL */
+    char *buf = (char *)mymalloc(len, M_STRING);
+    snprintf(buf, len, "%s.trace", name);
+    trace_log_file_name = buf;
+    return 1;
+}
+
+const char*
+get_trace_log_file_name()
+{
+    return trace_log_file_name;
+}
+
+int
+open_trace_log_file()
+{
+    if (!trace_log_file_name)
+        return 0;
+
+    trace_log_file = fopen(trace_log_file_name, "a");
+    return trace_log_file ? 1 : 0;
+}
+
+void
+close_trace_log_file()
+{
+    if (trace_log_file) {
+        fclose(trace_log_file);
+        trace_log_file = nullptr;
+    }
+}
+
+void
+reopen_trace_log_file()
+{
+    if (!trace_log_file_name)
+        return;
+
+    FILE *f = fopen(trace_log_file_name, "a");
+    if (!f) {
+        log_perror("Error reopening trace log file");
+        return;
+    }
+
+    close_trace_log_file();
+    trace_log_file = f;
+}
+
+void
+trace_log_emit(const char *line)
+{
+    if (!trace_log_file || !line)
+        return;
+
+    fputs(line, trace_log_file);
+    fputc('\n', trace_log_file);
+    fflush(trace_log_file);
 }
 
 static void

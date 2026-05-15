@@ -16,8 +16,11 @@
  *****************************************************************************/
 
 #include <chrono>
+#include <atomic>
 #include <string.h>
 #include <stdarg.h>
+#include <time.h>
+#include <stdlib.h>
 
 #include "collection.h"
 #include "config.h"
@@ -97,6 +100,172 @@ static Var not_available;
 
 static char* type_mismatch_string(int n_args, ...);
 static Var type_mismatch_value(int n_args, ...);
+
+static std::atomic<uint64_t> trace_id_counter{1};
+static std::atomic<uint64_t> span_id_counter{1};
+static enum outcome trace_activation_outcome = OUTCOME_DONE;
+static enum error trace_activation_error = E_NONE;
+
+static bool
+trace_full_calls_enabled()
+{
+    static int initialized = 0;
+    static bool enabled = false;
+
+    if (!initialized) {
+        const char *v = getenv("TOAST_TRACE_FULL_CALLS");
+        enabled = (v && (!strcmp(v, "1") || !strcasecmp(v, "true") || !strcasecmp(v, "yes")));
+        initialized = 1;
+    }
+    return enabled;
+}
+
+static const char *
+trace_outcome_name(enum outcome outcome)
+{
+    switch (outcome) {
+        case OUTCOME_DONE:
+            return "done";
+        case OUTCOME_ABORTED:
+            return "aborted";
+        case OUTCOME_BLOCKED:
+            return "blocked";
+    }
+    return "unknown";
+}
+
+static void
+append_json_escaped(Stream *s, const char *value)
+{
+    if (!value)
+        return;
+
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        switch (*p) {
+            case '\"':
+                stream_add_string(s, "\\\"");
+                break;
+            case '\\':
+                stream_add_string(s, "\\\\");
+                break;
+            case '\b':
+                stream_add_string(s, "\\b");
+                break;
+            case '\f':
+                stream_add_string(s, "\\f");
+                break;
+            case '\n':
+                stream_add_string(s, "\\n");
+                break;
+            case '\r':
+                stream_add_string(s, "\\r");
+                break;
+            case '\t':
+                stream_add_string(s, "\\t");
+                break;
+            default:
+                if (*p < 0x20)
+                    stream_printf(s, "\\u%04x", *p);
+                else
+                    stream_add_char(s, *p);
+        }
+    }
+}
+
+static void
+append_json_string_field(Stream *s, const char *key, const char *value)
+{
+    stream_printf(s, "\"%s\":\"", key);
+    append_json_escaped(s, value ? value : "");
+    stream_add_char(s, '\"');
+}
+
+static void
+append_json_var_as_string_field(Stream *s, const char *key, Var v)
+{
+    switch (v.type) {
+        case TYPE_INT:
+        case TYPE_OBJ:
+        case TYPE_ERR:
+        case TYPE_FLOAT:
+        case TYPE_STR:
+        case TYPE_LIST:
+        case TYPE_MAP:
+        case TYPE_ANON:
+        case TYPE_WAIF:
+        case TYPE_BOOL:
+            break;
+        default:
+            append_json_string_field(s, key, "");
+            return;
+    }
+
+    Stream *tmp = new_stream(128);
+    unparse_value(tmp, v);
+    append_json_string_field(s, key, reset_stream(tmp));
+    free_stream(tmp);
+}
+
+static const Var *
+try_get_rt_env_slot(const activation *a, int slot)
+{
+    if (!a || !a->prog || !a->rt_env)
+        return nullptr;
+    if (slot < 0 || (unsigned) slot >= a->prog->num_var_names)
+        return nullptr;
+    return &a->rt_env[slot];
+}
+
+static void
+emit_verb_trace_event(const activation *a, enum outcome outcome, enum error raised_error)
+{
+    static bool warned_missing_trace_slots = false;
+    Stream *line = new_stream(1024);
+    std::chrono::duration<double, std::milli> elapsed =
+        std::chrono::high_resolution_clock::now() - a->trace_start_time;
+    time_t now = time(nullptr);
+    if ((!try_get_rt_env_slot(a, SLOT_ARGSTR) || !try_get_rt_env_slot(a, SLOT_ARGS)) && !warned_missing_trace_slots) {
+        errlog("TRACE: Missing argstr/args slot in activation runtime env.\n");
+        warned_missing_trace_slots = true;
+    }
+
+    stream_add_char(line, '{');
+    stream_printf(line, "\"ts\":%" PRIdN ",", (Num)now);
+    stream_printf(line, "\"duration_ms\":%.3f,", elapsed.count());
+    stream_printf(line, "\"task_id\":%d,", a->trace_task_id);
+    stream_printf(line, "\"trace_id\":%llu,", (unsigned long long)a->trace_id);
+    stream_printf(line, "\"span_id\":%llu,", (unsigned long long)a->span_id);
+    if (a->parent_span_id)
+        stream_printf(line, "\"parent_span_id\":%llu,", (unsigned long long)a->parent_span_id);
+    else
+        stream_add_string(line, "\"parent_span_id\":null,");
+    stream_printf(line, "\"foreground\":%d,", a->trace_task_id > 0 ? 1 : 0);
+    stream_printf(line, "\"player\":%" PRIdN ",\"programmer\":%" PRIdN ",\"receiver\":%" PRIdN ",",
+                  a->player, a->progr, a->recv);
+    append_json_var_as_string_field(line, "this", a->_this);
+    stream_add_char(line, ',');
+    if (TYPE_OBJ == a->vloc.type)
+        stream_printf(line, "\"vloc_object\":%" PRIdN ",", a->vloc.v.obj);
+    else
+        stream_add_string(line, "\"vloc_object\":null,");
+    append_json_string_field(line, "verb", a->verb ? a->verb : "");
+    stream_add_char(line, ',');
+    append_json_string_field(line, "fullverb", a->verbname ? a->verbname : "");
+    stream_add_char(line, ',');
+    if (a->caller_vloc != NOTHING)
+        stream_printf(line, "\"caller_object\":%" PRIdN ",", a->caller_vloc);
+    else
+        stream_add_string(line, "\"caller_object\":null,");
+    append_json_string_field(line, "caller_fullverb", a->caller_verbname ? a->caller_verbname : "");
+    stream_add_char(line, ',');
+    append_json_string_field(line, "outcome", trace_outcome_name(outcome));
+    stream_add_char(line, ',');
+    stream_printf(line, "\"error_code\":%d", (int)raised_error);
+    stream_add_char(line, '}');
+
+    trace_log_emit(reset_stream(line));
+    free_stream(line);
+}
 
 /* macros to ease indexing into activation stack */
 #define RUN_ACTIV     activ_stack[top_activ_stack]
@@ -253,6 +422,10 @@ unwind_stack(Finally_Reason why, Var value, enum outcome *outcome)
      * why==FIN_ABORT always returns true/OUTCOME_ABORTED
      */
     Var code = (why == FIN_RAISE ? value.v.list[1] : zero);
+    trace_activation_outcome =
+        (why == FIN_ABORT || why == FIN_UNCAUGHT || why == FIN_RAISE)
+            ? OUTCOME_ABORTED : OUTCOME_DONE;
+    trace_activation_error = (why == FIN_RAISE && code.type == TYPE_ERR) ? code.v.err : E_NONE;
 
     for (;;) {          /* loop over activations */
         activation *a = &(activ_stack[top_activ_stack]);
@@ -609,6 +782,13 @@ push_activation(void)
 {
     if (top_activ_stack < max_stack_size - 1) {
         top_activ_stack++;
+        activ_stack[top_activ_stack].caller_vloc = NOTHING;
+        activ_stack[top_activ_stack].caller_verbname = nullptr;
+        activ_stack[top_activ_stack].trace_id = 0;
+        activ_stack[top_activ_stack].span_id = 0;
+        activ_stack[top_activ_stack].parent_span_id = 0;
+        activ_stack[top_activ_stack].trace_task_id = -1;
+        activ_stack[top_activ_stack].trace_start_time = std::chrono::high_resolution_clock::now();
         return 1;
     } else
         return 0;
@@ -618,6 +798,9 @@ void
 free_activation(activation * ap, char data_too)
 {
     Var *i;
+
+    if (trace_full_calls_enabled() || ap->parent_span_id == 0)
+        emit_verb_trace_event(ap, trace_activation_outcome, trace_activation_error);
 
     free_rt_env(ap->rt_env, ap->prog->num_var_names);
 
@@ -629,6 +812,8 @@ free_activation(activation * ap, char data_too)
     free_var(ap->vloc);
     free_str(ap->verb);
     free_str(ap->verbname);
+        if (ap->caller_verbname)
+        free_str(ap->caller_verbname);
 
     free_program(ap->prog);
 
@@ -736,8 +921,15 @@ call_verb2(Objid recv, const char *vname, Var _this, Var args, int do_pass, bool
     RUN_ACTIV.vloc = var_ref(db_verb_definer(h));
     RUN_ACTIV.verb = str_ref(vname);
     RUN_ACTIV.verbname = str_ref(db_verb_names(h));
+    RUN_ACTIV.caller_vloc = TYPE_OBJ == CALLER_ACTIV.vloc.type ? CALLER_ACTIV.vloc.v.obj : NOTHING;
+    RUN_ACTIV.caller_verbname = str_ref(CALLER_ACTIV.verbname);
     RUN_ACTIV.debug = (db_verb_flags(h) & VF_DEBUG);
     RUN_ACTIV.threaded = should_thread;
+    RUN_ACTIV.trace_id = CALLER_ACTIV.trace_id;
+    RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
+    RUN_ACTIV.parent_span_id = CALLER_ACTIV.span_id;
+    RUN_ACTIV.trace_task_id = current_task_id;
+    RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
 
     alloc_rt_stack(&RUN_ACTIV, program->main_vector.max_stack);
     RUN_ACTIV.pc = 0;
@@ -3087,6 +3279,15 @@ run_interpreter(char raise, enum error e,
     handler_verb_args = zero;
     handler_verb_name = nullptr;
 
+    if (RUN_ACTIV.trace_id == 0)
+        RUN_ACTIV.trace_id = trace_id_counter.fetch_add(1);
+    if (RUN_ACTIV.span_id == 0)
+        RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
+    if (!RUN_ACTIV.caller_verbname)
+        RUN_ACTIV.caller_verbname = str_dup("");
+    RUN_ACTIV.trace_task_id = current_task_id;
+    RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
+
     Objid object = RUN_ACTIV.vloc.v.obj;
     Objid progr = RUN_ACTIV.progr;
     const char *verb = str_ref(RUN_ACTIV.verbname);
@@ -3318,8 +3519,15 @@ do_server_program_task(Var _this, const char *verb, Var args, Var vloc,
     RUN_ACTIV.vloc = var_ref(vloc);
     RUN_ACTIV.verb = str_dup(verb);
     RUN_ACTIV.verbname = str_dup(verbname);
+    RUN_ACTIV.caller_vloc = NOTHING;
+    RUN_ACTIV.caller_verbname = str_dup("");
     RUN_ACTIV.debug = debug;
     RUN_ACTIV.threaded = DEFAULT_THREAD_MODE;
+    RUN_ACTIV.trace_id = trace_id_counter.fetch_add(1);
+    RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
+    RUN_ACTIV.parent_span_id = 0;
+    RUN_ACTIV.trace_task_id = current_task_id;
+    RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
     fill_in_rt_consts(env, program->version);
     set_rt_env_obj(env, SLOT_PLAYER, player);
     set_rt_env_obj(env, SLOT_CALLER, -1);
@@ -3353,8 +3561,15 @@ do_input_task(Objid user, Parsed_Command * pc, Objid recv, db_verb_handle vh)
     RUN_ACTIV.vloc = var_ref(db_verb_definer(vh));
     RUN_ACTIV.verb = str_ref(pc->verb);
     RUN_ACTIV.verbname = str_ref(db_verb_names(vh));
+    RUN_ACTIV.caller_vloc = NOTHING;
+    RUN_ACTIV.caller_verbname = str_dup("");
     RUN_ACTIV.debug = (db_verb_flags(vh) & VF_DEBUG);
     RUN_ACTIV.threaded = DEFAULT_THREAD_MODE;
+    RUN_ACTIV.trace_id = trace_id_counter.fetch_add(1);
+    RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
+    RUN_ACTIV.parent_span_id = 0;
+    RUN_ACTIV.trace_task_id = current_task_id;
+    RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
     fill_in_rt_consts(env, prog->version);
     set_rt_env_obj(env, SLOT_PLAYER, user);
     set_rt_env_obj(env, SLOT_CALLER, user);
@@ -3379,6 +3594,7 @@ do_forked_task(Program * prog, Var * rt_env, activation a, int f_id)
 
     RUN_ACTIV = a;
     RUN_ACTIV.rt_env = rt_env;
+    RUN_ACTIV.trace_task_id = current_task_id;
 
     return do_task(prog, f_id, nullptr, 0/*bg*/, 1/*traceback*/);
 }
@@ -3415,8 +3631,15 @@ setup_activ_for_eval(Program * prog)
     RUN_ACTIV.vloc = var_ref(nothing);
     RUN_ACTIV.verb = str_dup("");
     RUN_ACTIV.verbname = str_dup("Input to EVAL");
+    RUN_ACTIV.caller_vloc = TYPE_OBJ == CALLER_ACTIV.vloc.type ? CALLER_ACTIV.vloc.v.obj : NOTHING;
+    RUN_ACTIV.caller_verbname = str_ref(CALLER_ACTIV.verbname);
     RUN_ACTIV.debug = 1;
     RUN_ACTIV.threaded = DEFAULT_THREAD_MODE;
+    RUN_ACTIV.trace_id = CALLER_ACTIV.trace_id;
+    RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
+    RUN_ACTIV.parent_span_id = CALLER_ACTIV.span_id;
+    RUN_ACTIV.trace_task_id = current_task_id;
+    RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
     alloc_rt_stack(&RUN_ACTIV, RUN_ACTIV.prog->main_vector.max_stack);
     RUN_ACTIV.pc = 0;
     RUN_ACTIV.error_pc = 0;
@@ -3887,6 +4110,13 @@ read_activ_as_pi(activation * a)
     dbio_read_string();     /* was prepstr */
     a->verb = dbio_read_string_intern();
     a->verbname = dbio_read_string_intern();
+    a->trace_id = 0;
+    a->span_id = 0;
+    a->parent_span_id = 0;
+    a->trace_task_id = -1;
+    a->caller_vloc = NOTHING;
+    a->caller_verbname = str_dup("");
+    a->trace_start_time = std::chrono::high_resolution_clock::now();
     return 1;
 }
 

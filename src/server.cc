@@ -368,7 +368,7 @@ shutdown_signal(int sig)
 static void
 logfile_signal()
 {
-    if (get_log_file())
+    if (get_log_file() || get_trace_log_file_name())
         reopen_logfile_requested = true;
 }
 
@@ -814,16 +814,18 @@ main_loop(void)
             reopen_logfile_requested = false;
 
             FILE *new_log;
-            oklog("LOGFILE: Closing due to remote request signal.\n");
-
-            new_log = fopen(get_log_file_name(), "a");
-            if (new_log) {
-                fclose(get_log_file());
-                set_log_file(new_log);
-                oklog("LOGFILE: Reopening due to remote request signal.\n");
-            } else {
-                log_perror("Error reopening log file");
+            if (get_log_file_name()) {
+                oklog("LOGFILE: Closing due to remote request signal.\n");
+                new_log = fopen(get_log_file_name(), "a");
+                if (new_log) {
+                    fclose(get_log_file());
+                    set_log_file(new_log);
+                    oklog("LOGFILE: Reopening due to remote request signal.\n");
+                } else {
+                    log_perror("Error reopening log file");
+                }
             }
+            reopen_trace_log_file();
         }
 
         if (checkpoint_requested != CHKPT_OFF) {
@@ -2155,6 +2157,12 @@ main(int argc, char **argv)
         set_log_file(stderr);
     }
 
+    if (!set_trace_log_file_name(log_file ? log_file : "toaststunt.log")
+            || !open_trace_log_file()) {
+        perror("Error opening trace log file");
+        exit(1);
+    }
+
     if ((emergency && (script_file || script_line))
             || !db_initialize(&argc, &argv)
             || !network_initialize(argc, argv, &desc)) {
@@ -2355,6 +2363,7 @@ main(int argc, char **argv)
     sql_shutdown();
     curl_shutdown();
     pcre_shutdown();
+    close_trace_log_file();
 
     free_str(this_program);
 

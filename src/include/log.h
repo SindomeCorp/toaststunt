@@ -24,6 +24,12 @@ extern void set_log_file(FILE *);
 FILE* get_log_file();
 extern void set_log_file_name(const char *name);
 const char* get_log_file_name();
+extern int set_trace_log_file_name(const char *name);
+const char* get_trace_log_file_name();
+int open_trace_log_file();
+void close_trace_log_file();
+void reopen_trace_log_file();
+void trace_log_emit(const char *line);
 
 enum {LOG_NONE, LOG_INFO1, LOG_INFO2, LOG_INFO3, LOG_INFO4,
       LOG_NOTICE, LOG_WARNING, LOG_ERROR};

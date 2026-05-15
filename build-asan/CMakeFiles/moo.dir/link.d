@@ -1,0 +1,436 @@
+moo: \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/Scrt1.o \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/crti.o \
+  /usr/lib/gcc/x86_64-linux-gnu/15/crtbeginS.o \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libasan_preinit.o \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libasan.so \
+  CMakeFiles/moo.dir/parser.cc.o \
+  CMakeFiles/moo.dir/src/dependencies/yajl/yajl.c.o \
+  CMakeFiles/moo.dir/src/dependencies/yajl/yajl_alloc.c.o \
+  CMakeFiles/moo.dir/src/dependencies/yajl/yajl_buf.c.o \
+  CMakeFiles/moo.dir/src/dependencies/yajl/yajl_encode.c.o \
+  CMakeFiles/moo.dir/src/dependencies/yajl/yajl_gen.c.o \
+  CMakeFiles/moo.dir/src/dependencies/yajl/yajl_lex.c.o \
+  CMakeFiles/moo.dir/src/dependencies/yajl/yajl_parser.c.o \
+  CMakeFiles/moo.dir/src/dependencies/yajl/yajl_version.c.o \
+  CMakeFiles/moo.dir/src/dependencies/crypt/crypt_blowfish.c.o \
+  CMakeFiles/moo.dir/src/dependencies/crypt/crypt_gensalt.c.o \
+  CMakeFiles/moo.dir/src/dependencies/thpool.c.o \
+  CMakeFiles/moo.dir/src/dependencies/sosemanuk.c.o \
+  CMakeFiles/moo.dir/src/dependencies/linenoise.c.o \
+  CMakeFiles/moo.dir/src/dependencies/strnatcmp.c.o \
+  CMakeFiles/moo.dir/src/http_parser.c.o \
+  CMakeFiles/moo.dir/src/regexpr.c.o \
+  CMakeFiles/moo.dir/src/dependencies/pcrs.c.o \
+  CMakeFiles/moo.dir/src/ast.cc.o \
+  CMakeFiles/moo.dir/src/base64.cc.o \
+  CMakeFiles/moo.dir/src/code_gen.cc.o \
+  CMakeFiles/moo.dir/src/collection.cc.o \
+  CMakeFiles/moo.dir/src/crypto.cc.o \
+  CMakeFiles/moo.dir/src/db_file.cc.o \
+  CMakeFiles/moo.dir/src/db_io.cc.o \
+  CMakeFiles/moo.dir/src/db_objects.cc.o \
+  CMakeFiles/moo.dir/src/db_properties.cc.o \
+  CMakeFiles/moo.dir/src/db_verbs.cc.o \
+  CMakeFiles/moo.dir/src/decompile.cc.o \
+  CMakeFiles/moo.dir/src/disassemble.cc.o \
+  CMakeFiles/moo.dir/src/eval_env.cc.o \
+  CMakeFiles/moo.dir/src/eval_vm.cc.o \
+  CMakeFiles/moo.dir/src/exec.cc.o \
+  CMakeFiles/moo.dir/src/execute.cc.o \
+  CMakeFiles/moo.dir/src/extensions.cc.o \
+  CMakeFiles/moo.dir/src/fileio.cc.o \
+  CMakeFiles/moo.dir/src/functions.cc.o \
+  CMakeFiles/moo.dir/src/garbage.cc.o \
+  CMakeFiles/moo.dir/src/json.cc.o \
+  CMakeFiles/moo.dir/src/xml.cc.o \
+  CMakeFiles/moo.dir/keywords.cc.o \
+  CMakeFiles/moo.dir/src/log.cc.o \
+  CMakeFiles/moo.dir/src/list.cc.o \
+  CMakeFiles/moo.dir/src/map.cc.o \
+  CMakeFiles/moo.dir/src/match.cc.o \
+  CMakeFiles/moo.dir/src/network.cc.o \
+  CMakeFiles/moo.dir/src/net_mplex.cc.o \
+  CMakeFiles/moo.dir/src/numbers.cc.o \
+  CMakeFiles/moo.dir/src/objects.cc.o \
+  CMakeFiles/moo.dir/src/parse_cmd.cc.o \
+  CMakeFiles/moo.dir/src/pattern.cc.o \
+  CMakeFiles/moo.dir/src/program.cc.o \
+  CMakeFiles/moo.dir/src/property.cc.o \
+  CMakeFiles/moo.dir/src/quota.cc.o \
+  CMakeFiles/moo.dir/src/server.cc.o \
+  CMakeFiles/moo.dir/src/storage.cc.o \
+  CMakeFiles/moo.dir/src/streams.cc.o \
+  CMakeFiles/moo.dir/src/str_intern.cc.o \
+  CMakeFiles/moo.dir/src/sql.cc.o \
+  CMakeFiles/moo.dir/src/sym_table.cc.o \
+  CMakeFiles/moo.dir/src/system.cc.o \
+  CMakeFiles/moo.dir/src/tasks.cc.o \
+  CMakeFiles/moo.dir/src/timers.cc.o \
+  CMakeFiles/moo.dir/src/unparse.cc.o \
+  CMakeFiles/moo.dir/src/utils.cc.o \
+  CMakeFiles/moo.dir/src/verbs.cc.o \
+  CMakeFiles/moo.dir/src/version.cc.o \
+  CMakeFiles/moo.dir/src/pcre_moo.cc.o \
+  CMakeFiles/moo.dir/src/background.cc.o \
+  CMakeFiles/moo.dir/src/waif.cc.o \
+  CMakeFiles/moo.dir/src/simplexnoise.cc.o \
+  CMakeFiles/moo.dir/src/argon2.cc.o \
+  CMakeFiles/moo.dir/src/spellcheck.cc.o \
+  CMakeFiles/moo.dir/src/curl.cc.o \
+  /usr/lib/x86_64-linux-gnu/libnettle.so \
+  /usr/lib/x86_64-linux-gnu/libargon2.so \
+  /usr/lib/x86_64-linux-gnu/libexpat.so \
+  /usr/local/lib/libpcre.so \
+  /usr/lib/x86_64-linux-gnu/libcurl.so \
+  /usr/lib/x86_64-linux-gnu/libaspell.so \
+  /usr/lib/x86_64-linux-gnu/libsqlite3.so \
+  /usr/local/lib/libpqxx.a \
+  /lib/x86_64-linux-gnu/libpq.so \
+  /usr/lib/x86_64-linux-gnu/libssl.so \
+  /usr/lib/x86_64-linux-gnu/libcrypto.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libcrypt.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libstdc++.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so \
+  /usr/lib/x86_64-linux-gnu/libm.so.6 \
+  /usr/lib/x86_64-linux-gnu/libmvec.so.1 \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libgcc_s.so.1 \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc.a \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc.a \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libpthread.a \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libc.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libc.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libc.so \
+  /usr/lib/x86_64-linux-gnu/libc.so.6 \
+  /usr/lib/x86_64-linux-gnu/libc_nonshared.a \
+  /lib64/ld-linux-x86-64.so.2 \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libgcc_s.so.1 \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc.a \
+  /usr/lib/gcc/x86_64-linux-gnu/15/libgcc.a \
+  /usr/lib/gcc/x86_64-linux-gnu/15/crtendS.o \
+  /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/crtn.o \
+  /usr/lib/x86_64-linux-gnu/libnghttp2.so.14 \
+  /usr/lib/x86_64-linux-gnu/libidn2.so.0 \
+  /usr/lib/x86_64-linux-gnu/librtmp.so.1 \
+  /usr/lib/x86_64-linux-gnu/libldap.so.2 \
+  /usr/lib/x86_64-linux-gnu/liblber.so.2 \
+  /usr/lib/x86_64-linux-gnu/libssh2.so.1 \
+  /usr/lib/x86_64-linux-gnu/libpsl.so.5 \
+  /usr/lib/x86_64-linux-gnu/libgssapi_krb5.so.2 \
+  /usr/lib/x86_64-linux-gnu/libzstd.so.1 \
+  /usr/lib/x86_64-linux-gnu/libbrotlidec.so.1 \
+  /usr/lib/x86_64-linux-gnu/libz.so.1 \
+  /lib64/ld-linux-x86-64.so.2 \
+  /usr/lib/x86_64-linux-gnu/libunistring.so.5 \
+  /usr/lib/x86_64-linux-gnu/libgnutls.so.30 \
+  /usr/lib/x86_64-linux-gnu/libhogweed.so.6 \
+  /usr/lib/x86_64-linux-gnu/libgmp.so.10 \
+  /usr/lib/x86_64-linux-gnu/libsasl2.so.2 \
+  /usr/lib/x86_64-linux-gnu/libkrb5.so.3 \
+  /usr/lib/x86_64-linux-gnu/libk5crypto.so.3 \
+  /usr/lib/x86_64-linux-gnu/libcom_err.so.2 \
+  /usr/lib/x86_64-linux-gnu/libkrb5support.so.0 \
+  /usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1 \
+  /usr/lib/x86_64-linux-gnu/libp11-kit.so.0 \
+  /usr/lib/x86_64-linux-gnu/libtasn1.so.6 \
+  /usr/lib/x86_64-linux-gnu/libkeyutils.so.1 \
+  /usr/lib/x86_64-linux-gnu/libresolv.so.2 \
+  /usr/lib/x86_64-linux-gnu/libffi.so.8
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/Scrt1.o:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/crti.o:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/crtbeginS.o:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libasan_preinit.o:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libasan.so:
+
+CMakeFiles/moo.dir/parser.cc.o:
+
+CMakeFiles/moo.dir/src/dependencies/yajl/yajl.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/yajl/yajl_alloc.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/yajl/yajl_buf.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/yajl/yajl_encode.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/yajl/yajl_gen.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/yajl/yajl_lex.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/yajl/yajl_parser.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/yajl/yajl_version.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/crypt/crypt_blowfish.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/crypt/crypt_gensalt.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/thpool.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/sosemanuk.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/linenoise.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/strnatcmp.c.o:
+
+CMakeFiles/moo.dir/src/http_parser.c.o:
+
+CMakeFiles/moo.dir/src/regexpr.c.o:
+
+CMakeFiles/moo.dir/src/dependencies/pcrs.c.o:
+
+CMakeFiles/moo.dir/src/ast.cc.o:
+
+CMakeFiles/moo.dir/src/base64.cc.o:
+
+CMakeFiles/moo.dir/src/code_gen.cc.o:
+
+CMakeFiles/moo.dir/src/collection.cc.o:
+
+CMakeFiles/moo.dir/src/crypto.cc.o:
+
+CMakeFiles/moo.dir/src/db_file.cc.o:
+
+CMakeFiles/moo.dir/src/db_io.cc.o:
+
+CMakeFiles/moo.dir/src/db_objects.cc.o:
+
+CMakeFiles/moo.dir/src/db_properties.cc.o:
+
+CMakeFiles/moo.dir/src/db_verbs.cc.o:
+
+CMakeFiles/moo.dir/src/decompile.cc.o:
+
+CMakeFiles/moo.dir/src/disassemble.cc.o:
+
+CMakeFiles/moo.dir/src/eval_env.cc.o:
+
+CMakeFiles/moo.dir/src/eval_vm.cc.o:
+
+CMakeFiles/moo.dir/src/exec.cc.o:
+
+CMakeFiles/moo.dir/src/execute.cc.o:
+
+CMakeFiles/moo.dir/src/extensions.cc.o:
+
+CMakeFiles/moo.dir/src/fileio.cc.o:
+
+CMakeFiles/moo.dir/src/functions.cc.o:
+
+CMakeFiles/moo.dir/src/garbage.cc.o:
+
+CMakeFiles/moo.dir/src/json.cc.o:
+
+CMakeFiles/moo.dir/src/xml.cc.o:
+
+CMakeFiles/moo.dir/keywords.cc.o:
+
+CMakeFiles/moo.dir/src/log.cc.o:
+
+CMakeFiles/moo.dir/src/list.cc.o:
+
+CMakeFiles/moo.dir/src/map.cc.o:
+
+CMakeFiles/moo.dir/src/match.cc.o:
+
+CMakeFiles/moo.dir/src/network.cc.o:
+
+CMakeFiles/moo.dir/src/net_mplex.cc.o:
+
+CMakeFiles/moo.dir/src/numbers.cc.o:
+
+CMakeFiles/moo.dir/src/objects.cc.o:
+
+CMakeFiles/moo.dir/src/parse_cmd.cc.o:
+
+CMakeFiles/moo.dir/src/pattern.cc.o:
+
+CMakeFiles/moo.dir/src/program.cc.o:
+
+CMakeFiles/moo.dir/src/property.cc.o:
+
+CMakeFiles/moo.dir/src/quota.cc.o:
+
+CMakeFiles/moo.dir/src/server.cc.o:
+
+CMakeFiles/moo.dir/src/storage.cc.o:
+
+CMakeFiles/moo.dir/src/streams.cc.o:
+
+CMakeFiles/moo.dir/src/str_intern.cc.o:
+
+CMakeFiles/moo.dir/src/sql.cc.o:
+
+CMakeFiles/moo.dir/src/sym_table.cc.o:
+
+CMakeFiles/moo.dir/src/system.cc.o:
+
+CMakeFiles/moo.dir/src/tasks.cc.o:
+
+CMakeFiles/moo.dir/src/timers.cc.o:
+
+CMakeFiles/moo.dir/src/unparse.cc.o:
+
+CMakeFiles/moo.dir/src/utils.cc.o:
+
+CMakeFiles/moo.dir/src/verbs.cc.o:
+
+CMakeFiles/moo.dir/src/version.cc.o:
+
+CMakeFiles/moo.dir/src/pcre_moo.cc.o:
+
+CMakeFiles/moo.dir/src/background.cc.o:
+
+CMakeFiles/moo.dir/src/waif.cc.o:
+
+CMakeFiles/moo.dir/src/simplexnoise.cc.o:
+
+CMakeFiles/moo.dir/src/argon2.cc.o:
+
+CMakeFiles/moo.dir/src/spellcheck.cc.o:
+
+CMakeFiles/moo.dir/src/curl.cc.o:
+
+/usr/lib/x86_64-linux-gnu/libnettle.so:
+
+/usr/lib/x86_64-linux-gnu/libargon2.so:
+
+/usr/lib/x86_64-linux-gnu/libexpat.so:
+
+/usr/local/lib/libpcre.so:
+
+/usr/lib/x86_64-linux-gnu/libcurl.so:
+
+/usr/lib/x86_64-linux-gnu/libaspell.so:
+
+/usr/lib/x86_64-linux-gnu/libsqlite3.so:
+
+/usr/local/lib/libpqxx.a:
+
+/lib/x86_64-linux-gnu/libpq.so:
+
+/usr/lib/x86_64-linux-gnu/libssl.so:
+
+/usr/lib/x86_64-linux-gnu/libcrypto.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libcrypt.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libstdc++.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so:
+
+/usr/lib/x86_64-linux-gnu/libm.so.6:
+
+/usr/lib/x86_64-linux-gnu/libmvec.so.1:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libgcc_s.so.1:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc.a:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc.a:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libpthread.a:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libc.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libc.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libc.so:
+
+/usr/lib/x86_64-linux-gnu/libc.so.6:
+
+/usr/lib/x86_64-linux-gnu/libc_nonshared.a:
+
+/lib64/ld-linux-x86-64.so.2:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc_s.so:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libgcc_s.so.1:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc.a:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/libgcc.a:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/crtendS.o:
+
+/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/crtn.o:
+
+/usr/lib/x86_64-linux-gnu/libnghttp2.so.14:
+
+/usr/lib/x86_64-linux-gnu/libidn2.so.0:
+
+/usr/lib/x86_64-linux-gnu/librtmp.so.1:
+
+/usr/lib/x86_64-linux-gnu/libldap.so.2:
+
+/usr/lib/x86_64-linux-gnu/liblber.so.2:
+
+/usr/lib/x86_64-linux-gnu/libssh2.so.1:
+
+/usr/lib/x86_64-linux-gnu/libpsl.so.5:
+
+/usr/lib/x86_64-linux-gnu/libgssapi_krb5.so.2:
+
+/usr/lib/x86_64-linux-gnu/libzstd.so.1:
+
+/usr/lib/x86_64-linux-gnu/libbrotlidec.so.1:
+
+/usr/lib/x86_64-linux-gnu/libz.so.1:
+
+/lib64/ld-linux-x86-64.so.2:
+
+/usr/lib/x86_64-linux-gnu/libunistring.so.5:
+
+/usr/lib/x86_64-linux-gnu/libgnutls.so.30:
+
+/usr/lib/x86_64-linux-gnu/libhogweed.so.6:
+
+/usr/lib/x86_64-linux-gnu/libgmp.so.10:
+
+/usr/lib/x86_64-linux-gnu/libsasl2.so.2:
+
+/usr/lib/x86_64-linux-gnu/libkrb5.so.3:
+
+/usr/lib/x86_64-linux-gnu/libk5crypto.so.3:
+
+/usr/lib/x86_64-linux-gnu/libcom_err.so.2:
+
+/usr/lib/x86_64-linux-gnu/libkrb5support.so.0:
+
+/usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1:
+
+/usr/lib/x86_64-linux-gnu/libp11-kit.so.0:
+
+/usr/lib/x86_64-linux-gnu/libtasn1.so.6:
+
+/usr/lib/x86_64-linux-gnu/libkeyutils.so.1:
+
+/usr/lib/x86_64-linux-gnu/libresolv.so.2:
+
+/usr/lib/x86_64-linux-gnu/libffi.so.8:

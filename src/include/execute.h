@@ -24,6 +24,7 @@
 #include "parse_cmd.h"
 #include "program.h"
 #include "structures.h"
+#include <chrono>
 
 typedef struct {
     Program *prog;
@@ -57,8 +58,15 @@ typedef struct {
     Var vloc;
     const char *verb;
     const char *verbname;
+    const char *caller_verbname;
+    Objid caller_vloc;
     int debug;
     bool threaded;
+    uint64_t trace_id;
+    uint64_t span_id;
+    uint64_t parent_span_id;
+    int trace_task_id;
+    std::chrono::high_resolution_clock::time_point trace_start_time;
 } activation;
 
 extern void free_activation(activation *, char data_too);

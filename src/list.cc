@@ -506,6 +506,9 @@ unparse_value(Stream * s, Var v)
         case TYPE_BOOL:
             stream_printf(s, v.v.truth ? "true" : "false");
             break;
+        case TYPE_NONE:
+            stream_add_string(s, "none");
+            break;
         default:
             errlog("UNPARSE_VALUE: Unknown Var type = %d\n", v.type);
             stream_add_string(s, ">>Unknown value<<");

@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/seven/toaststunt/build-asan/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
