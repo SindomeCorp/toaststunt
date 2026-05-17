@@ -29,6 +29,7 @@
 #include <sys/sysctl.h>
 #endif
 
+#include <algorithm>
 #include <string>
 #include <sstream>
 #include <fstream>
@@ -110,6 +111,7 @@ static Checkpoint_Reason checkpoint_requested = CHKPT_OFF;
 static int checkpoint_finished = 0; /* 1 = failure, 2 = success */
 
 static bool reopen_logfile_requested = false;
+static bool verb_counts_flush_requested = false;
 
 static void handle_user_defined_signal(int sig);
 
@@ -484,6 +486,12 @@ checkpoint_timer(Timer_ID id, Timer_Data data)
 }
 
 static void
+verb_counts_timer(Timer_ID id, Timer_Data data)
+{
+    verb_counts_flush_requested = true;
+}
+
+static void
 set_checkpoint_timer(int first_time)
 {
     int interval, now = time(nullptr);
@@ -497,6 +505,88 @@ set_checkpoint_timer(int first_time)
     if (!first_time)
         cancel_timer(last_checkpoint_timer);
     last_checkpoint_timer = set_timer(interval, checkpoint_timer, nullptr);
+}
+
+static void
+set_verb_counts_timer(int first_time)
+{
+    static Timer_ID last_verb_counts_timer;
+    const int interval = 30;
+
+    if (!first_time)
+        cancel_timer(last_verb_counts_timer);
+    last_verb_counts_timer = set_timer(interval, verb_counts_timer, nullptr);
+}
+
+static void
+append_json_escaped(Stream *s, const char *value)
+{
+    if (!value)
+        return;
+
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        switch (*p) {
+            case '\"':
+                stream_add_string(s, "\\\"");
+                break;
+            case '\\':
+                stream_add_string(s, "\\\\");
+                break;
+            case '\b':
+                stream_add_string(s, "\\b");
+                break;
+            case '\f':
+                stream_add_string(s, "\\f");
+                break;
+            case '\n':
+                stream_add_string(s, "\\n");
+                break;
+            case '\r':
+                stream_add_string(s, "\\r");
+                break;
+            case '\t':
+                stream_add_string(s, "\\t");
+                break;
+            default:
+                if (*p < 0x20)
+                    stream_printf(s, "\\u%04x", *p);
+                else
+                    stream_add_char(s, *p);
+        }
+    }
+}
+
+static void
+flush_verb_counts_log()
+{
+    std::vector<std::pair<std::string, uint64_t>> snapshot = snapshot_verb_invocation_counts();
+    const size_t max_entries = 50;
+
+    std::sort(snapshot.begin(), snapshot.end(),
+              [](const auto &a, const auto &b) {
+                  if (a.second != b.second)
+                      return a.second > b.second;
+                  return a.first < b.first;
+              });
+    if (snapshot.size() > max_entries)
+        snapshot.resize(max_entries);
+
+    Stream *line = new_stream(512 + snapshot.size() * 32);
+    time_t now = time(nullptr);
+
+    stream_printf(line, "{\"ts\":%lld,\"window_seconds\":30,\"mode\":\"cumulative\",\"counts\":{",
+                  (long long) now);
+    for (size_t i = 0; i < snapshot.size(); i++) {
+        if (i)
+            stream_add_char(line, ',');
+        stream_add_char(line, '\"');
+        append_json_escaped(line, snapshot[i].first.c_str());
+        stream_printf(line, "\":%llu", (unsigned long long)snapshot[i].second);
+    }
+    stream_add_string(line, "}}");
+
+    verb_counts_log_emit(reset_stream(line));
+    free_stream(line);
 }
 
 static const char *
@@ -793,6 +883,7 @@ main_loop(void)
     /* Third, run #0:server_started() */
     run_server_task(-1, Var::new_obj(SYSTEM_OBJECT), "server_started", new_list(0), "", nullptr);
     set_checkpoint_timer(1);
+    set_verb_counts_timer(1);
 
     /* Now, we enter the main server loop */
     while (!shutdown_triggered) {
@@ -826,6 +917,13 @@ main_loop(void)
                 }
             }
             reopen_trace_log_file();
+            reopen_verb_counts_log_file();
+        }
+
+        if (verb_counts_flush_requested) {
+            verb_counts_flush_requested = false;
+            flush_verb_counts_log();
+            set_verb_counts_timer(0);
         }
 
         if (checkpoint_requested != CHKPT_OFF) {
@@ -2162,6 +2260,11 @@ main(int argc, char **argv)
         perror("Error opening trace log file");
         exit(1);
     }
+    if (!set_verb_counts_log_file_name(log_file ? log_file : "toaststunt.log")
+            || !open_verb_counts_log_file()) {
+        perror("Error opening verb counts log file");
+        exit(1);
+    }
 
     if ((emergency && (script_file || script_line))
             || !db_initialize(&argc, &argv)
@@ -2364,6 +2467,7 @@ main(int argc, char **argv)
     curl_shutdown();
     pcre_shutdown();
     close_trace_log_file();
+    close_verb_counts_log_file();
 
     free_str(this_program);
 

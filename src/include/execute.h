@@ -25,6 +25,9 @@
 #include "program.h"
 #include "structures.h"
 #include <chrono>
+#include <string>
+#include <utility>
+#include <vector>
 
 typedef struct {
     Program *prog;
@@ -144,5 +147,6 @@ extern Var make_rt_var_map(Var * rt_env, const char **var_names, unsigned size);
 
 extern bool get_thread_mode();
 extern void set_thread_mode(bool mode);
+extern std::vector<std::pair<std::string, uint64_t>> snapshot_verb_invocation_counts();
 
 #endif

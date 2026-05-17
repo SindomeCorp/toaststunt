@@ -13,6 +13,9 @@
 #include <string>
 #include <stdexcept>
 #include <cstdlib>
+#include <atomic>
+#include <pthread.h>
+#include <unistd.h>
 
 #include "background.h"
 #include "functions.h"
@@ -213,6 +216,7 @@ class SQLSessionPool {
 
         SQLSession* get_connection() {
             std::unique_lock<std::mutex> lock(connections_mutex);
+            usleep(1000000); // DEBUG: intentionally hold pool mutex to force fork/mutex race
             DLOG("DLOG in SQLSessionPool get_connection\n");
             auto connection = this->get_or_create_connection();
             DLOG("done calling get_or_create_connection\n");
@@ -467,13 +471,38 @@ class PostgreSQLSessionPool: public SQLSessionPool {
 };
 #endif // POSTGRESQL_FOUND
 
-static std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>> connection_pools;
+static std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>> &
+sql_connection_pools()
+{
+    /* Intentionally leaked singleton:
+     * avoids static-destruction teardown in a post-fork checkpointer child. */
+    static auto *pools = new std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>>();
+    return *pools;
+}
+
+static std::atomic<bool> sql_in_fork_child{false};
+static std::once_flag sql_atfork_once;
+
+static void sql_atfork_prepare(void) {}
+static void sql_atfork_parent(void) {}
+static void sql_atfork_child(void)
+{
+    /* Child inherited process state from a multithreaded parent.
+     * Do not touch inherited SQL mutex/pool state in the child. */
+    sql_in_fork_child.store(true, std::memory_order_relaxed);
+}
+
+static inline bool sql_is_available_in_this_process()
+{
+    return !sql_in_fork_child.load(std::memory_order_relaxed);
+}
 
 static int
 next_identifier()
 {
     int id = -1;
     int next_id = 1;
+    auto &connection_pools = sql_connection_pools();
     while (id < 0) {
         if (!connection_pools.count(next_id)) {
             id = next_id;
@@ -486,6 +515,10 @@ next_identifier()
 
 void sql_shutdown()
 {
+    if (!sql_is_available_in_this_process()) {
+        return;
+    }
+    auto &connection_pools = sql_connection_pools();
     connection_pools.clear();
 }
 
@@ -494,6 +527,7 @@ static void query_callback_adapter(Var a, Var* b, void* extra);
 
 static SQLSessionPool* create_session_pool(std::string connection_string, unsigned char options)
 {
+    auto &connection_pools = sql_connection_pools();
     auto uri = std::make_unique<Uri>(connection_string);
     int handle_id = next_identifier();
     std::unique_ptr<SQLSessionPool> pool;
@@ -518,6 +552,7 @@ static SQLSessionPool* get_or_create_session_pool(
     unsigned char options = SQL_PARSE_TYPES | SQL_PARSE_OBJECTS
 )
 {
+    auto &connection_pools = sql_connection_pools();
     for (auto& item: connection_pools) {
         if (item.second->connection_uri->full_string == connection_string) {
             return item.second.get();
@@ -529,6 +564,12 @@ static SQLSessionPool* get_or_create_session_pool(
 void
 query_callback(const Var arglist, Var *ret)
 {
+    if (!sql_is_available_in_this_process()) {
+        *ret = str_dup_to_var("SQL unavailable in forked checkpoint child.");
+        return;
+    }
+
+    auto &connection_pools = sql_connection_pools();
     int nargs = arglist.v.list[0].v.num;
     int handle_id = arglist.v.list[1].v.num;
     std::string query = arglist.v.list[2].v.str;
@@ -608,6 +649,12 @@ free_human_string(void *p)
 static package
 bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
 {
+    if (!sql_is_available_in_this_process()) {
+        free_var(arglist);
+        return make_var_pack(str_dup_to_var("SQL unavailable in forked checkpoint child."));
+    }
+
+    auto &connection_pools = sql_connection_pools();
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
@@ -647,6 +694,12 @@ bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_connections (Var arglist, Byte next, void *vdata, Objid progr)
 {
+    if (!sql_is_available_in_this_process()) {
+        free_var(arglist);
+        return make_var_pack(new_map());
+    }
+
+    auto &connection_pools = sql_connection_pools();
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
@@ -667,6 +720,11 @@ bf_sql_connections (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_open_connection (Var arglist, Byte next, void *vdata, Objid progr)
 {
+    if (!sql_is_available_in_this_process()) {
+        free_var(arglist);
+        return make_raise_pack(E_INVARG, "SQL unavailable in forked checkpoint child.", zero);
+    }
+
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
@@ -699,6 +757,12 @@ bf_sql_open_connection (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
 {
+    if (!sql_is_available_in_this_process()) {
+        free_var(arglist);
+        return make_var_pack(str_dup_to_var("SQL unavailable in forked checkpoint child."));
+    }
+
+    auto &connection_pools = sql_connection_pools();
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
@@ -736,6 +800,12 @@ bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_info(Var arglist, Byte next, void *vdata, Objid progr)
 {
+    if (!sql_is_available_in_this_process()) {
+        free_var(arglist);
+        return make_var_pack(str_dup_to_var("SQL unavailable in forked checkpoint child."));
+    }
+
+    auto &connection_pools = sql_connection_pools();
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
@@ -763,6 +833,10 @@ bf_sql_info(Var arglist, Byte next, void *vdata, Objid progr)
 
 void register_sql(void)
 {
+    std::call_once(sql_atfork_once, [] {
+        pthread_atfork(sql_atfork_prepare, sql_atfork_parent, sql_atfork_child);
+    });
+
     oklog("REGISTER_SQL: SQL features are online and enabled!\n");
 #ifdef POSTGRESQL_FOUND
     oklog("  POSTGRESQL_OK: PostgreSQL database feature is enabled.\n");
@@ -770,7 +844,7 @@ void register_sql(void)
 
     register_function("sql_query", 2, 3, bf_sql_query, TYPE_INT, TYPE_STR, TYPE_LIST);
     register_function("sql_connections", 0, 0, bf_sql_connections, TYPE_ANY, TYPE_LIST);
-    register_function("sql_open", 1, 1, bf_sql_open_connection, TYPE_STR, TYPE_INT, TYPE_INT);
+    register_function("sql_open", 1, 2, bf_sql_open_connection, TYPE_STR, TYPE_INT, TYPE_INT);
     register_function("sql_close", 1, 1, bf_sql_close_connection, TYPE_INT, TYPE_ANY);
     register_function("sql_info", 1, 1, bf_sql_info, TYPE_INT, TYPE_ANY);
 }

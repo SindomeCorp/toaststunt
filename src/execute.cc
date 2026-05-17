@@ -17,6 +17,10 @@
 
 #include <chrono>
 #include <atomic>
+#include <algorithm>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
@@ -105,6 +109,32 @@ static std::atomic<uint64_t> trace_id_counter{1};
 static std::atomic<uint64_t> span_id_counter{1};
 static enum outcome trace_activation_outcome = OUTCOME_DONE;
 static enum error trace_activation_error = E_NONE;
+static std::mutex verb_invocation_counts_mutex;
+static std::unordered_map<std::string, uint64_t> verb_invocation_counts;
+
+static void
+note_resolved_verb_invocation(Objid recv, const char *verbname)
+{
+    std::string key = "#" + std::to_string((long long)recv) + ":" + (verbname ? verbname : "");
+    std::lock_guard<std::mutex> lock(verb_invocation_counts_mutex);
+    verb_invocation_counts[key] += 1;
+}
+
+std::vector<std::pair<std::string, uint64_t>>
+snapshot_verb_invocation_counts()
+{
+    std::lock_guard<std::mutex> lock(verb_invocation_counts_mutex);
+    std::vector<std::pair<std::string, uint64_t>> snapshot;
+    snapshot.reserve(verb_invocation_counts.size());
+    for (const auto &entry: verb_invocation_counts)
+        snapshot.emplace_back(entry.first, entry.second);
+
+    std::sort(snapshot.begin(), snapshot.end(),
+              [](const auto &a, const auto &b) {
+                  return a.first < b.first;
+              });
+    return snapshot;
+}
 
 static bool
 trace_full_calls_enabled()
@@ -912,6 +942,8 @@ call_verb2(Objid recv, const char *vname, Var _this, Var args, int do_pass, bool
         return E_VERBNF;
     else if (!push_activation())
         return E_MAXREC;
+
+    note_resolved_verb_invocation(recv, db_verb_names(h));
 
     program = db_verb_program(h);
     RUN_ACTIV.prog = program_ref(program);
@@ -3508,6 +3540,8 @@ do_server_program_task(Var _this, const char *verb, Var args, Var vloc,
             break;
     }
 
+    note_resolved_verb_invocation(receiver, verbname);
+
     check_activ_stack_size(current_max_stack_size());
     top_activ_stack = 0;
 
@@ -3549,6 +3583,8 @@ do_input_task(Objid user, Parsed_Command * pc, Objid recv, db_verb_handle vh)
 {
     Program *prog = db_verb_program(vh);
     Var *env;
+
+    note_resolved_verb_invocation(recv, db_verb_names(vh));
 
     check_activ_stack_size(current_max_stack_size());
     top_activ_stack = 0;

@@ -30,6 +30,12 @@ int open_trace_log_file();
 void close_trace_log_file();
 void reopen_trace_log_file();
 void trace_log_emit(const char *line);
+extern int set_verb_counts_log_file_name(const char *name);
+const char* get_verb_counts_log_file_name();
+int open_verb_counts_log_file();
+void close_verb_counts_log_file();
+void reopen_verb_counts_log_file();
+void verb_counts_log_emit(const char *line);
 
 enum {LOG_NONE, LOG_INFO1, LOG_INFO2, LOG_INFO3, LOG_INFO4,
       LOG_NOTICE, LOG_WARNING, LOG_ERROR};

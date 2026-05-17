@@ -36,6 +36,8 @@ static FILE *log_file = nullptr;
 static const char *log_file_name = nullptr;
 static FILE *trace_log_file = nullptr;
 static const char *trace_log_file_name = nullptr;
+static FILE *verb_counts_log_file = nullptr;
+static const char *verb_counts_log_file_name = nullptr;
 
 void
 set_log_file(FILE * f)
@@ -124,6 +126,71 @@ trace_log_emit(const char *line)
     fputs(line, trace_log_file);
     fputc('\n', trace_log_file);
     fflush(trace_log_file);
+}
+
+int
+set_verb_counts_log_file_name(const char *name)
+{
+    if (!name)
+        return 0;
+
+    size_t len = strlen(name) + 13; /* ".verb_counts" + NUL */
+    char *buf = (char *)mymalloc(len, M_STRING);
+    snprintf(buf, len, "%s.verb_counts", name);
+    verb_counts_log_file_name = buf;
+    return 1;
+}
+
+const char*
+get_verb_counts_log_file_name()
+{
+    return verb_counts_log_file_name;
+}
+
+int
+open_verb_counts_log_file()
+{
+    if (!verb_counts_log_file_name)
+        return 0;
+
+    verb_counts_log_file = fopen(verb_counts_log_file_name, "a");
+    return verb_counts_log_file ? 1 : 0;
+}
+
+void
+close_verb_counts_log_file()
+{
+    if (verb_counts_log_file) {
+        fclose(verb_counts_log_file);
+        verb_counts_log_file = nullptr;
+    }
+}
+
+void
+reopen_verb_counts_log_file()
+{
+    if (!verb_counts_log_file_name)
+        return;
+
+    FILE *f = fopen(verb_counts_log_file_name, "a");
+    if (!f) {
+        log_perror("Error reopening verb counts log file");
+        return;
+    }
+
+    close_verb_counts_log_file();
+    verb_counts_log_file = f;
+}
+
+void
+verb_counts_log_emit(const char *line)
+{
+    if (!verb_counts_log_file || !line)
+        return;
+
+    fputs(line, verb_counts_log_file);
+    fputc('\n', verb_counts_log_file);
+    fflush(verb_counts_log_file);
 }
 
 static void
