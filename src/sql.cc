@@ -40,8 +40,7 @@
 #include <pcre.h>
 #include <mutex>   // std::once_flag, std::call_once
 
-// SET THIS TO FALSE FOR PROD!
-static bool debugging = true;  // Set to false to disable local logs in prod
+static bool debugging = false;
 #define DLOG(...) do { if (debugging) oklog(__VA_ARGS__); } while (0)
 
 /* Strip newlines for MOO strings (tabs instead). */
@@ -467,13 +466,24 @@ class PostgreSQLSessionPool: public SQLSessionPool {
 };
 #endif // POSTGRESQL_FOUND
 
-static std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>> connection_pools;
+using SQLConnectionPools = std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>>;
+
+static SQLConnectionPools&
+sql_connection_pools()
+{
+    /* Forked checkpointers exit through exit(), which runs C++ static
+       destructors. Keep SQL pools off the static destructor list so a
+       checkpoint child never waits on mutexes inherited from parent threads. */
+    static SQLConnectionPools *pools = new SQLConnectionPools();
+    return *pools;
+}
 
 static int
 next_identifier()
 {
     int id = -1;
     int next_id = 1;
+    auto& connection_pools = sql_connection_pools();
     while (id < 0) {
         if (!connection_pools.count(next_id)) {
             id = next_id;
@@ -486,7 +496,7 @@ next_identifier()
 
 void sql_shutdown()
 {
-    connection_pools.clear();
+    sql_connection_pools().clear();
 }
 
 // Adapter to satisfy background_thread(void (*)(Var, Var*, void*), ...)
@@ -504,6 +514,7 @@ static SQLSessionPool* create_session_pool(std::string connection_string, unsign
 #endif
 
     if (pool) {
+        auto& connection_pools = sql_connection_pools();
         pool->handle_id = handle_id;
         pool->options = options;
         connection_pools[handle_id] = std::move(pool);
@@ -518,6 +529,7 @@ static SQLSessionPool* get_or_create_session_pool(
     unsigned char options = SQL_PARSE_TYPES | SQL_PARSE_OBJECTS
 )
 {
+    auto& connection_pools = sql_connection_pools();
     for (auto& item: connection_pools) {
         if (item.second->connection_uri->full_string == connection_string) {
             return item.second.get();
@@ -534,6 +546,7 @@ query_callback(const Var arglist, Var *ret)
     std::string query = arglist.v.list[2].v.str;
 
     SQLSession* session = nullptr;
+    auto& connection_pools = sql_connection_pools();
     auto pool_it = connection_pools.find(handle_id);
     if (pool_it == connection_pools.end()) {
         *ret = str_dup_to_var("No connection handle value found by that ID.");
@@ -614,6 +627,7 @@ bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
     }
 
     int handle_id = arglist.v.list[1].v.num;
+    auto& connection_pools = sql_connection_pools();
     auto handle = connection_pools.find(handle_id);
     if (handle == connection_pools.end()) {
         free_var(arglist);
@@ -653,6 +667,7 @@ bf_sql_connections (Var arglist, Byte next, void *vdata, Objid progr)
     }
 
     Var ret = new_map();
+    auto& connection_pools = sql_connection_pools();
     for (auto const& item: connection_pools) {
         Var key;
         key.type = TYPE_INT;
@@ -705,6 +720,7 @@ bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
     }
 
     int handle_id = arglist.v.list[1].v.num;
+    auto& connection_pools = sql_connection_pools();
     auto handle = connection_pools.find(handle_id);
     if (handle == connection_pools.end()) {
         free_var(arglist);
@@ -742,6 +758,7 @@ bf_sql_info(Var arglist, Byte next, void *vdata, Objid progr)
     }
 
     int handle_id = arglist.v.list[1].v.num;
+    auto& connection_pools = sql_connection_pools();
     auto handle = connection_pools.find(handle_id);
     if (handle == connection_pools.end()) {
         free_var(arglist);
