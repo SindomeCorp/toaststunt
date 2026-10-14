@@ -41,6 +41,7 @@
 #include <mutex>   // std::once_flag, std::call_once
 
 static bool debugging = false;
+
 #define DLOG(...) do { if (debugging) oklog(__VA_ARGS__); } while (0)
 
 /* Strip newlines for MOO strings (tabs instead). */
