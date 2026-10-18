@@ -173,6 +173,22 @@
 #define OUTBOUND_NETWORK 1
 
 /******************************************************************************
+ * These options control the default values for the TCP keep-alive connection option.
+ * When set_connection_option(<con>, "keep-alive", <value>) is given a true <value>,
+ * these defaults will be used. When given a MAP of options for <value>, the defaults
+ * will be used for values that don't appear in the option MAP. These options are:
+ * 
+ * KEEP_ALIVE_DEFAULT:   Whether keep-alive is enabled for all new connections by default.
+ * KEEP_ALIVE_IDLE:      The time (in seconds) before starting keep-alive probes.
+ * KEEP_ALIVE_INTERVAL:: The time (in seconds) between keep-alive probes.
+ * KEEP_ALIVE_COUNT:     The number of failed keep-alive probes before disconnecting.
+ */
+#define KEEP_ALIVE_DEFAULT    false
+#define KEEP_ALIVE_IDLE       300
+#define KEEP_ALIVE_INTERVAL   120
+#define KEEP_ALIVE_COUNT      5
+
+/******************************************************************************
  * The server supports secure TLS connections using the OpenSSL library.
  * If USE_TLS is defined, you will be able to listen() for TLS connections
  * and connect to TLS servers using open_network_connection().
@@ -318,20 +334,13 @@
 #define STRING_INTERNING /* */
 
 /******************************************************************************
- * Store the length of the string WITH the string rather than recomputing
- * it each time it is needed.
+ * For size operations, store the data with the type rather than recomputing.
+ * String:     Store the length of the string.
+ * List / Map: Store the number of bytes of storage used.
  ******************************************************************************
- */
+*/
 
-#define MEMO_STRLEN /* */
-
-/******************************************************************************
- * Store the number of bytes of storage used by lists/maps WITH the list/map
- * rather than recomputing it each time it is needed.
- ******************************************************************************
- */
-
-#define MEMO_VALUE_BYTES /* */
+#define MEMO_SIZE
 
 /******************************************************************************
  * DEFAULT_MAX_STRING_CONCAT,      if set to a positive value, is the length
@@ -538,6 +547,49 @@
 */
 
 #define JSON_MAX_PARSE_DEPTH 1000
+
+/******************************************************************************
+ * The default maximum number of seconds a curl() transfer can last.
+ * Can be overridden with $server_options.curl_timeout.
+ */
+
+#define CURL_TIMEOUT 60
+
+/******************************************************************************
+ * The largest timeout (in seconds) a curl() caller may request.  Requests
+ * asking for more than this raise E_INVARG.  Can be overridden with
+ * $server_options.curl_max_timeout.
+ */
+
+#define CURL_MAX_TIMEOUT 300
+
+/******************************************************************************
+ * The maximum number of response bytes curl() will accept before aborting
+ * the transfer.  Callers may lower (but not raise) this per request with
+ * the "max_size" option.  Can be overridden with
+ * $server_options.curl_max_response_bytes.
+ */
+
+#define CURL_MAX_RESPONSE_BYTES (10 * 1024 * 1024)
+
+/******************************************************************************
+ * The default number of redirects curl() will follow when the
+ * "follow_redirects" option is enabled, and the most a caller may ask for.
+ */
+
+#define CURL_MAX_REDIRECTS 5
+#define CURL_MAX_REDIRECTS_LIMIT 20
+
+/******************************************************************************
+ * The HTTP request methods curl() is permitted to use, as a comma-separated
+ * list drawn from: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS.  Requests
+ * for a method not listed here raise E_PERM.  Set it to "GET,HEAD" for a
+ * read-only curl().
+ */
+
+#ifndef CURL_ALLOWED_METHODS
+#define CURL_ALLOWED_METHODS "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS"
+#endif
 
 /*****************************************************************************
  ********** You shouldn't need to change anything below this point. **********
