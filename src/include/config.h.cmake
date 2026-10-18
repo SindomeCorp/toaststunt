@@ -77,9 +77,10 @@
 #cmakedefine ARGON2_FOUND
 #cmakedefine ASPELL_FOUND
 #cmakedefine CURL_FOUND
-#cmakedefine PCRE_FOUND
+#cmakedefine PCRE2_FOUND
 #cmakedefine SQLITE3_FOUND
 #cmakedefine OPENSSL_FOUND
+#cmakedefine JEMALLOC_FOUND
 
 #ifndef OPENSSL_FOUND
  #undef USE_TLS

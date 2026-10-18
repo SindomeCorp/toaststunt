@@ -1,11 +1,24 @@
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.12...4.4)
 set(VERSION_MAJOR 2)
 set(VERSION_MINOR 7)
-set(VERSION_RELEASE 0)
-set(VERSION_EXT "_38")
+set(VERSION_RELEASE 3)
+set(VERSION_EXT "_37")
 project(ToastStunt VERSION ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_RELEASE} LANGUAGES CXX C)
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/CMakeModules/")
+# Compile Options
+option(ONLY_32_BITS "Use 32-bit integers instead of 64-bit." OFF)
+option(USE_JEMALLOC "Use jemalloc (if available) for memory allocation." OFF)
+
+# Fall back to 32-bit mode if the target doesn't support 64-bit
+if( CMAKE_SIZEOF_VOID_P EQUAL 4 )
+    set(ONLY_32_BITS true)
+endif()
+
+if(DEFINED CMAKE_MODULE_PATH)
+    list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
+else()
+    set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
+endif()
 
 # Don't bother if we don't have these
 find_package(BISON REQUIRED)
@@ -16,6 +29,14 @@ find_package(gperf REQUIRED)
 EXECUTE_PROCESS( COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE )
 if(APPLE AND ${ARCHITECTURE} STREQUAL "arm64")
     set(APPLE_SILICON_FOUND 1)
+endif()
+
+# Check for a virtualized container
+if(EXISTS "/proc/1/cgroup")
+    file(READ "/proc/1/cgroup" CGROUPS)
+    string(REGEX MATCH ".*(docker|lxc).*" IN_A_CONTAINER ${CGROUPS})
+else()
+    set(IN_A_CONTAINER 0)
 endif()
 
 # Where to find header files
@@ -35,23 +56,16 @@ else()
     endif()
 endif()
 
-# Compile Options
-option(ONLY_32_BITS "Use 32-bit integers instead of 64-bit." OFF)
-
-# Fall back to 32-bit mode if the target doesn't support 64-bit
-if( CMAKE_SIZEOF_VOID_P EQUAL 4 )
-    set(ONLY_32_BITS true)
-endif()
-
 # Compiler Flags
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 99)
 
 # These flags are shared by the RELEASE and WARN build types.
 set(SHARED_COMPILE_FLAGS "-O3")
-if(NOT APPLE_SILICON_FOUND)
+if(NOT APPLE_SILICON_FOUND AND NOT IN_A_CONTAINER)
     set(SHARED_COMPILE_FLAGS "${SHARED_COMPILE_FLAGS} -march=native")
-else()
+elseif(APPLE_SILICON_FOUND)
     set(SHARED_COMPILE_FLAGS "${SHARED_COMPILE_FLAGS} -mcpu=apple-m1")
 endif()
 
@@ -66,11 +80,12 @@ set(CMAKE_CXX_FLAGS_WARN "${CMAKE_C_FLAGS_WARN}")
 # Check for memory leaks: Minimal optimizations, debug enabled, and sanitize address
 set(CMAKE_C_FLAGS_LEAKCHECK  "-O1 -g -fsanitize=address -fno-omit-frame-pointer -fno-optimize-sibling-calls")
 set(CMAKE_CXX_FLAGS_LEAKCHECK "${CMAKE_C_FLAGS_LEAKCHECK}")
+set(EXTRA_LINKER_FLAGS "")
 if(CMAKE_BUILD_TYPE MATCHES "LeakCheck")
     set(EXTRA_LINKER_FLAGS "-fsanitize=address")
 endif()
 
-string(TOUPPER ${CMAKE_BUILD_TYPE} CMAKE_BUILD_TYPE_UPPER)
+string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE_UPPER}}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE_UPPER}}")
 
@@ -120,7 +135,13 @@ add_custom_command(
     COMMENT "Generating keywords.cc")
 
 # version_options.h
-execute_process(COMMAND ${PERL_EXECUTABLE} ${CMAKE_SOURCE_DIR}/src/include/version_opt_gen.pl)
+execute_process(
+    COMMAND ${PERL_EXECUTABLE} ${CMAKE_SOURCE_DIR}/src/include/version_opt_gen.pl
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    RESULT_VARIABLE VERSION_OPTIONS_RESULT)
+if(NOT VERSION_OPTIONS_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to generate version_options.h")
+endif()
 
 # Add current version control situation to version_src.h
 set(VERSION_SRC ${CMAKE_BINARY_DIR}/version_src.h)
@@ -134,22 +155,31 @@ add_custom_command(
 # Find packages. We don't do anything with the information yet because we need to know if things exist
 #                to modify the source files, so we have to do it before moo is defined. But we can't
 #                do the package setup UNTIL moo is defined.
-IF(APPLE_SILICON_FOUND)
+if(APPLE_SILICON_FOUND)
     set(CMAKE_THREAD_LIBS_INIT "-lpthread")
     set(CMAKE_HAVE_THREADS_LIBRARY 1)
     set(CMAKE_USE_WIN32_THREADS_INIT 0)
     set(CMAKE_USE_PTHREADS_INIT 1)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
-ELSE()
+else()
     find_package(Threads REQUIRED)
-ENDIF()
+endif()
 find_package(Nettle REQUIRED)
 find_package(Argon2 REQUIRED)
-find_package(PCRE)
+find_package(PCRE2)
 find_package(CURL)
 find_package(ASPELL)
 find_package(SQLite3)
 find_package(OpenSSL)
+
+if(USE_JEMALLOC)
+    find_library(JEMALLOC_LIBRARY NAMES jemalloc)
+    if(NOT JEMALLOC_LIBRARY)
+        message(WARNING "jemalloc library not found. Not using.")
+    else()
+        set(JEMALLOC_FOUND 1)
+    endif()
+endif()
 
 # Millions of source files
 set(src_CSRCS
@@ -160,7 +190,7 @@ set(src_CSRCS
     src/http_parser.c
     src/regexpr.c)
 
-if(PCRE_FOUND)
+if(PCRE2_FOUND)
     list(APPEND src_CSRCS src/dependencies/pcrs.c)
 endif()
 
@@ -249,9 +279,9 @@ set(src_SERVER
 add_executable(moo ${src_SERVER})
 
 # Make sure we have the packages we need
-include_directories(${NETTLE_INCLUDE_DIRS})
+include_directories(${NETTLE_INCLUDE_DIR})
 target_link_libraries(moo ${NETTLE_LIBRARIES})
-include_directories(${ARGON2_INCLUDE_DIRS})
+include_directories(${ARGON2_INCLUDE_DIR})
 target_link_libraries(moo ${ARGON2_LIBRARIES})
 
 if(CMAKE_USE_PTHREADS_INIT)
@@ -261,9 +291,9 @@ else()
     target_link_libraries(moo Threads::Threads)
 endif()
 
-if(PCRE_FOUND)
-    include_directories(${PCRE_INCLUDE_DIRS})
-    target_link_libraries(moo ${PCRE_LIBRARIES})
+if(PCRE2_FOUND)
+    include_directories(${PCRE2_INCLUDE_DIRS})
+    target_link_libraries(moo ${PCRE2_LIBRARIES})
 endif()
 
 if(CURL_FOUND)
@@ -277,13 +307,18 @@ if(ASPELL_FOUND)
 endif()
 
 if(SQLITE3_FOUND)
-    include_directories(${SQLITE3_INCLUDE_DIRS})
+    include_directories(${SQLITE3_INCLUDE_DIR})
     target_link_libraries(moo ${SQLITE3_LIBRARIES})
 endif()
 
 if(OPENSSL_FOUND)
     include_directories(${OPENSSL_INCLUDE_DIR})
     target_link_libraries(moo ${OPENSSL_LIBRARIES})
+endif()
+
+if(JEMALLOC_FOUND)
+    include_directories(${JEMALLOC_INCLUDE_DIRS})
+    target_link_libraries(moo ${JEMALLOC_LIBRARY})
 endif()
 
 # Setup #defines as needed
@@ -300,3 +335,6 @@ endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C flags: ${CMAKE_C_FLAGS}")
 message(STATUS "CXX flags: ${CMAKE_CXX_FLAGS}")
+if(JEMALLOC_FOUND)
+    message(STATUS "Using jemalloc")
+endif()

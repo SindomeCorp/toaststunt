@@ -167,10 +167,12 @@ extern int read_values_pending_finalization(void);
  * of the server module from the network implementation.
  */
 extern int find_network_handle(Objid obj, network_handle **handle);
+extern bool is_shutdown_triggered();
 /***************************************************************/
 
 #include "streams.h"
-bool is_localhost(Objid connection);
+bool is_trusted_proxy(Objid connection);
+/* Is the connecting IP a trusted proxy ($server_options.trusted_proxies) */
 int proxy_connected(Objid connection, char *command);
 
 #include "db.h"
@@ -204,7 +206,7 @@ int proxy_connected(Objid connection, char *command);
 		 value = MAX_LIST_VALUE_BYTES_LIMIT;						\
 	   }))															\
 	   																\
-  DEFINE( SVO_MAX_MAP_VALUE_BYTES, max_list_value_bytes,			\
+  DEFINE( SVO_MAX_MAP_VALUE_BYTES, max_map_value_bytes,				\
 																	\
 	  int, DEFAULT_MAX_MAP_VALUE_BYTES,								\
 	 _STATEMENT({													\
