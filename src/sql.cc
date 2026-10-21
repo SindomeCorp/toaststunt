@@ -36,9 +36,9 @@
 #   include <mysql/mysql.h>
 #endif
 
-// PCRE (local helper for URI parsing only)
-#include <pcre.h>
-#include <mutex>   // std::once_flag, std::call_once
+// PCRE2 (local helper for URI parsing only)
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
 
 static bool debugging = false;
 
@@ -94,41 +94,43 @@ static Var string_to_moo_type(char* str, bool parse_objects, bool sanitize_strin
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
- * Local URI parser using PCRE (decoupled from upstream pcre_moo.cc internals)
+ * Local URI parser using PCRE2 (decoupled from upstream pcre_moo.cc internals)
  * ──────────────────────────────────────────────────────────────────────────── */
 namespace {
     static std::once_flag g_uri_once;
-    static pcre* g_uri_re = nullptr;
-    static pcre_extra* g_uri_extra = nullptr;
+    static std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)>
+        g_uri_re(nullptr, pcre2_code_free);
 
     // Named groups: scheme, user, pass, host, port, path, params
     static const char* const URI_PATTERN =
         R"((?<scheme>[^:]+):\/\/(?:(?:(?<user>[^:]+):(?<pass>[^@]+))(?=@)@)?(?<host>[^?:/]*)(?::(?<port>\d+))?(?:\/(?<path>[^?]*))?(?:\?(?<params>.*))?)";
 
     static void init_uri_regex() {
-        const char* err = nullptr;
-        int eos = 0;
-        g_uri_re = pcre_compile(URI_PATTERN, PCRE_CASELESS, &err, &eos, nullptr);
+        int error_code;
+        PCRE2_SIZE error_offset;
+        g_uri_re.reset(pcre2_compile(reinterpret_cast<PCRE2_SPTR>(URI_PATTERN),
+            PCRE2_ZERO_TERMINATED, PCRE2_CASELESS, &error_code, &error_offset, nullptr));
         if (!g_uri_re) {
-            oklog("URI PCRE compile failed at %d: %s\n", eos, err ? err : "(null)");
+            PCRE2_UCHAR error[256] = {0};
+            pcre2_get_error_message(error_code, error, sizeof(error));
+            oklog("URI PCRE2 compile failed at %zu: %s\n",
+                static_cast<size_t>(error_offset), reinterpret_cast<const char*>(error));
             return;
         }
-#ifdef PCRE_STUDY_JIT_COMPILE
-        g_uri_extra = pcre_study(g_uri_re, PCRE_STUDY_JIT_COMPILE, &err);
-#else
-        g_uri_extra = pcre_study(g_uri_re, 0, &err);
-#endif
-        if (err) oklog("URI PCRE study warning: %s\n", err);
+        // Matching falls back to the interpreter if JIT is unavailable.
+        pcre2_jit_compile(g_uri_re.get(), PCRE2_JIT_COMPLETE);
     }
 
-    static std::string get_named_group(const char* subj, int* ovec, int rc, const char* name)
+    static std::string get_named_group(const char* subj, pcre2_match_data* match_data, const char* name)
     {
-        const char* out = nullptr;
-        int got = pcre_get_named_substring(g_uri_re, subj, ovec, rc, name, &out);
-        if (got < 0 || !out) return std::string();
-        std::string s(out);
-        pcre_free_substring(out);  // prevent leaks
-        return s;
+        int group = pcre2_substring_number_from_name(g_uri_re.get(),
+            reinterpret_cast<PCRE2_SPTR>(name));
+        if (group < 0) return std::string();
+        PCRE2_SIZE* offsets = pcre2_get_ovector_pointer(match_data);
+        PCRE2_SIZE start = offsets[2 * group];
+        PCRE2_SIZE end = offsets[2 * group + 1];
+        if (start == PCRE2_UNSET) return std::string();
+        return std::string(subj + start, end - start);
     }
 } // namespace
 
@@ -150,29 +152,33 @@ class Uri {
             }
 
             const char* subject = full_string.c_str();
-            int subject_length = static_cast<int>(full_string.size());
-            // Enough space for 30 groups (3 ints per group)
-            int ovec[90] = {0};
+            std::unique_ptr<pcre2_match_data, decltype(&pcre2_match_data_free)>
+                match_data(pcre2_match_data_create_from_pattern(g_uri_re.get(), nullptr),
+                    pcre2_match_data_free);
+            if (!match_data) {
+                throw std::runtime_error("URI regex match data unavailable.");
+            }
 
-            int rc = pcre_exec(g_uri_re, g_uri_extra, subject, subject_length, 0, 0, ovec, (int)(sizeof(ovec)/sizeof(ovec[0])));
+            int rc = pcre2_match(g_uri_re.get(), reinterpret_cast<PCRE2_SPTR>(subject),
+                full_string.size(), 0, 0, match_data.get(), nullptr);
             if (rc < 0) {
                 throw std::runtime_error("Failed to parse URI.");
             }
 
-            scheme = get_named_group(subject, ovec, rc, "scheme");
-            user   = get_named_group(subject, ovec, rc, "user");
-            pass   = get_named_group(subject, ovec, rc, "pass");
-            host   = get_named_group(subject, ovec, rc, "host");
+            scheme = get_named_group(subject, match_data.get(), "scheme");
+            user   = get_named_group(subject, match_data.get(), "user");
+            pass   = get_named_group(subject, match_data.get(), "pass");
+            host   = get_named_group(subject, match_data.get(), "host");
 
             if (scheme.empty() || host.empty()) {
                 throw std::runtime_error("Failed to parse URI: missing scheme or host.");
             }
 
             // Optional components: allow empty path/query when absent in the URI.
-            path   = get_named_group(subject, ovec, rc, "path");
-            params = get_named_group(subject, ovec, rc, "params");
+            path   = get_named_group(subject, match_data.get(), "path");
+            params = get_named_group(subject, match_data.get(), "params");
 
-            std::string port_s = get_named_group(subject, ovec, rc, "port");
+            std::string port_s = get_named_group(subject, match_data.get(), "port");
             if (!port_s.empty()) {
                 try {
                     int p = std::stoi(port_s);
