@@ -13,9 +13,6 @@
 #include <string>
 #include <stdexcept>
 #include <cstdlib>
-#include <atomic>
-#include <pthread.h>
-#include <unistd.h>
 
 #include "background.h"
 #include "functions.h"
@@ -39,12 +36,12 @@
 #   include <mysql/mysql.h>
 #endif
 
-// PCRE (local helper for URI parsing only)
-#include <pcre.h>
-#include <mutex>   // std::once_flag, std::call_once
+// PCRE2 (local helper for URI parsing only)
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
 
-// SET THIS TO FALSE FOR PROD!
-static bool debugging = true;  // Set to false to disable local logs in prod
+static bool debugging = false;
+
 #define DLOG(...) do { if (debugging) oklog(__VA_ARGS__); } while (0)
 
 /* Strip newlines for MOO strings (tabs instead). */
@@ -97,41 +94,43 @@ static Var string_to_moo_type(char* str, bool parse_objects, bool sanitize_strin
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
- * Local URI parser using PCRE (decoupled from upstream pcre_moo.cc internals)
+ * Local URI parser using PCRE2 (decoupled from upstream pcre_moo.cc internals)
  * ──────────────────────────────────────────────────────────────────────────── */
 namespace {
     static std::once_flag g_uri_once;
-    static pcre* g_uri_re = nullptr;
-    static pcre_extra* g_uri_extra = nullptr;
+    static std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)>
+        g_uri_re(nullptr, pcre2_code_free);
 
     // Named groups: scheme, user, pass, host, port, path, params
     static const char* const URI_PATTERN =
         R"((?<scheme>[^:]+):\/\/(?:(?:(?<user>[^:]+):(?<pass>[^@]+))(?=@)@)?(?<host>[^?:/]*)(?::(?<port>\d+))?(?:\/(?<path>[^?]*))?(?:\?(?<params>.*))?)";
 
     static void init_uri_regex() {
-        const char* err = nullptr;
-        int eos = 0;
-        g_uri_re = pcre_compile(URI_PATTERN, PCRE_CASELESS, &err, &eos, nullptr);
+        int error_code;
+        PCRE2_SIZE error_offset;
+        g_uri_re.reset(pcre2_compile(reinterpret_cast<PCRE2_SPTR>(URI_PATTERN),
+            PCRE2_ZERO_TERMINATED, PCRE2_CASELESS, &error_code, &error_offset, nullptr));
         if (!g_uri_re) {
-            oklog("URI PCRE compile failed at %d: %s\n", eos, err ? err : "(null)");
+            PCRE2_UCHAR error[256] = {0};
+            pcre2_get_error_message(error_code, error, sizeof(error));
+            oklog("URI PCRE2 compile failed at %zu: %s\n",
+                static_cast<size_t>(error_offset), reinterpret_cast<const char*>(error));
             return;
         }
-#ifdef PCRE_STUDY_JIT_COMPILE
-        g_uri_extra = pcre_study(g_uri_re, PCRE_STUDY_JIT_COMPILE, &err);
-#else
-        g_uri_extra = pcre_study(g_uri_re, 0, &err);
-#endif
-        if (err) oklog("URI PCRE study warning: %s\n", err);
+        // Matching falls back to the interpreter if JIT is unavailable.
+        pcre2_jit_compile(g_uri_re.get(), PCRE2_JIT_COMPLETE);
     }
 
-    static std::string get_named_group(const char* subj, int* ovec, int rc, const char* name)
+    static std::string get_named_group(const char* subj, pcre2_match_data* match_data, const char* name)
     {
-        const char* out = nullptr;
-        int got = pcre_get_named_substring(g_uri_re, subj, ovec, rc, name, &out);
-        if (got < 0 || !out) return std::string();
-        std::string s(out);
-        pcre_free_substring(out);  // prevent leaks
-        return s;
+        int group = pcre2_substring_number_from_name(g_uri_re.get(),
+            reinterpret_cast<PCRE2_SPTR>(name));
+        if (group < 0) return std::string();
+        PCRE2_SIZE* offsets = pcre2_get_ovector_pointer(match_data);
+        PCRE2_SIZE start = offsets[2 * group];
+        PCRE2_SIZE end = offsets[2 * group + 1];
+        if (start == PCRE2_UNSET) return std::string();
+        return std::string(subj + start, end - start);
     }
 } // namespace
 
@@ -153,29 +152,33 @@ class Uri {
             }
 
             const char* subject = full_string.c_str();
-            int subject_length = static_cast<int>(full_string.size());
-            // Enough space for 30 groups (3 ints per group)
-            int ovec[90] = {0};
+            std::unique_ptr<pcre2_match_data, decltype(&pcre2_match_data_free)>
+                match_data(pcre2_match_data_create_from_pattern(g_uri_re.get(), nullptr),
+                    pcre2_match_data_free);
+            if (!match_data) {
+                throw std::runtime_error("URI regex match data unavailable.");
+            }
 
-            int rc = pcre_exec(g_uri_re, g_uri_extra, subject, subject_length, 0, 0, ovec, (int)(sizeof(ovec)/sizeof(ovec[0])));
+            int rc = pcre2_match(g_uri_re.get(), reinterpret_cast<PCRE2_SPTR>(subject),
+                full_string.size(), 0, 0, match_data.get(), nullptr);
             if (rc < 0) {
                 throw std::runtime_error("Failed to parse URI.");
             }
 
-            scheme = get_named_group(subject, ovec, rc, "scheme");
-            user   = get_named_group(subject, ovec, rc, "user");
-            pass   = get_named_group(subject, ovec, rc, "pass");
-            host   = get_named_group(subject, ovec, rc, "host");
+            scheme = get_named_group(subject, match_data.get(), "scheme");
+            user   = get_named_group(subject, match_data.get(), "user");
+            pass   = get_named_group(subject, match_data.get(), "pass");
+            host   = get_named_group(subject, match_data.get(), "host");
 
             if (scheme.empty() || host.empty()) {
                 throw std::runtime_error("Failed to parse URI: missing scheme or host.");
             }
 
             // Optional components: allow empty path/query when absent in the URI.
-            path   = get_named_group(subject, ovec, rc, "path");
-            params = get_named_group(subject, ovec, rc, "params");
+            path   = get_named_group(subject, match_data.get(), "path");
+            params = get_named_group(subject, match_data.get(), "params");
 
-            std::string port_s = get_named_group(subject, ovec, rc, "port");
+            std::string port_s = get_named_group(subject, match_data.get(), "port");
             if (!port_s.empty()) {
                 try {
                     int p = std::stoi(port_s);
@@ -216,7 +219,6 @@ class SQLSessionPool {
 
         SQLSession* get_connection() {
             std::unique_lock<std::mutex> lock(connections_mutex);
-            usleep(1000000); // DEBUG: intentionally hold pool mutex to force fork/mutex race
             DLOG("DLOG in SQLSessionPool get_connection\n");
             auto connection = this->get_or_create_connection();
             DLOG("done calling get_or_create_connection\n");
@@ -471,30 +473,16 @@ class PostgreSQLSessionPool: public SQLSessionPool {
 };
 #endif // POSTGRESQL_FOUND
 
-static std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>> &
+using SQLConnectionPools = std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>>;
+
+static SQLConnectionPools&
 sql_connection_pools()
 {
-    /* Intentionally leaked singleton:
-     * avoids static-destruction teardown in a post-fork checkpointer child. */
-    static auto *pools = new std::unordered_map<unsigned short, std::unique_ptr<SQLSessionPool>>();
+    /* Forked checkpointers exit through exit(), which runs C++ static
+       destructors. Keep SQL pools off the static destructor list so a
+       checkpoint child never waits on mutexes inherited from parent threads. */
+    static SQLConnectionPools *pools = new SQLConnectionPools();
     return *pools;
-}
-
-static std::atomic<bool> sql_in_fork_child{false};
-static std::once_flag sql_atfork_once;
-
-static void sql_atfork_prepare(void) {}
-static void sql_atfork_parent(void) {}
-static void sql_atfork_child(void)
-{
-    /* Child inherited process state from a multithreaded parent.
-     * Do not touch inherited SQL mutex/pool state in the child. */
-    sql_in_fork_child.store(true, std::memory_order_relaxed);
-}
-
-static inline bool sql_is_available_in_this_process()
-{
-    return !sql_in_fork_child.load(std::memory_order_relaxed);
 }
 
 static int
@@ -502,7 +490,7 @@ next_identifier()
 {
     int id = -1;
     int next_id = 1;
-    auto &connection_pools = sql_connection_pools();
+    auto& connection_pools = sql_connection_pools();
     while (id < 0) {
         if (!connection_pools.count(next_id)) {
             id = next_id;
@@ -515,11 +503,7 @@ next_identifier()
 
 void sql_shutdown()
 {
-    if (!sql_is_available_in_this_process()) {
-        return;
-    }
-    auto &connection_pools = sql_connection_pools();
-    connection_pools.clear();
+    sql_connection_pools().clear();
 }
 
 // Adapter to satisfy background_thread(void (*)(Var, Var*, void*), ...)
@@ -527,7 +511,6 @@ static void query_callback_adapter(Var a, Var* b, void* extra);
 
 static SQLSessionPool* create_session_pool(std::string connection_string, unsigned char options)
 {
-    auto &connection_pools = sql_connection_pools();
     auto uri = std::make_unique<Uri>(connection_string);
     int handle_id = next_identifier();
     std::unique_ptr<SQLSessionPool> pool;
@@ -538,6 +521,7 @@ static SQLSessionPool* create_session_pool(std::string connection_string, unsign
 #endif
 
     if (pool) {
+        auto& connection_pools = sql_connection_pools();
         pool->handle_id = handle_id;
         pool->options = options;
         connection_pools[handle_id] = std::move(pool);
@@ -552,7 +536,7 @@ static SQLSessionPool* get_or_create_session_pool(
     unsigned char options = SQL_PARSE_TYPES | SQL_PARSE_OBJECTS
 )
 {
-    auto &connection_pools = sql_connection_pools();
+    auto& connection_pools = sql_connection_pools();
     for (auto& item: connection_pools) {
         if (item.second->connection_uri->full_string == connection_string) {
             return item.second.get();
@@ -564,17 +548,12 @@ static SQLSessionPool* get_or_create_session_pool(
 void
 query_callback(const Var arglist, Var *ret)
 {
-    if (!sql_is_available_in_this_process()) {
-        *ret = str_dup_to_var("SQL unavailable in forked checkpoint child.");
-        return;
-    }
-
-    auto &connection_pools = sql_connection_pools();
     int nargs = arglist.v.list[0].v.num;
     int handle_id = arglist.v.list[1].v.num;
     std::string query = arglist.v.list[2].v.str;
 
     SQLSession* session = nullptr;
+    auto& connection_pools = sql_connection_pools();
     auto pool_it = connection_pools.find(handle_id);
     if (pool_it == connection_pools.end()) {
         *ret = str_dup_to_var("No connection handle value found by that ID.");
@@ -649,18 +628,13 @@ free_human_string(void *p)
 static package
 bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!sql_is_available_in_this_process()) {
-        free_var(arglist);
-        return make_var_pack(str_dup_to_var("SQL unavailable in forked checkpoint child."));
-    }
-
-    auto &connection_pools = sql_connection_pools();
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
 
     int handle_id = arglist.v.list[1].v.num;
+    auto& connection_pools = sql_connection_pools();
     auto handle = connection_pools.find(handle_id);
     if (handle == connection_pools.end()) {
         free_var(arglist);
@@ -694,18 +668,13 @@ bf_sql_query (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_connections (Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!sql_is_available_in_this_process()) {
-        free_var(arglist);
-        return make_var_pack(new_map());
-    }
-
-    auto &connection_pools = sql_connection_pools();
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
 
     Var ret = new_map();
+    auto& connection_pools = sql_connection_pools();
     for (auto const& item: connection_pools) {
         Var key;
         key.type = TYPE_INT;
@@ -720,11 +689,6 @@ bf_sql_connections (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_open_connection (Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!sql_is_available_in_this_process()) {
-        free_var(arglist);
-        return make_raise_pack(E_INVARG, "SQL unavailable in forked checkpoint child.", zero);
-    }
-
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
@@ -757,18 +721,13 @@ bf_sql_open_connection (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!sql_is_available_in_this_process()) {
-        free_var(arglist);
-        return make_var_pack(str_dup_to_var("SQL unavailable in forked checkpoint child."));
-    }
-
-    auto &connection_pools = sql_connection_pools();
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
 
     int handle_id = arglist.v.list[1].v.num;
+    auto& connection_pools = sql_connection_pools();
     auto handle = connection_pools.find(handle_id);
     if (handle == connection_pools.end()) {
         free_var(arglist);
@@ -800,18 +759,13 @@ bf_sql_close_connection (Var arglist, Byte next, void *vdata, Objid progr)
 static package
 bf_sql_info(Var arglist, Byte next, void *vdata, Objid progr)
 {
-    if (!sql_is_available_in_this_process()) {
-        free_var(arglist);
-        return make_var_pack(str_dup_to_var("SQL unavailable in forked checkpoint child."));
-    }
-
-    auto &connection_pools = sql_connection_pools();
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
 
     int handle_id = arglist.v.list[1].v.num;
+    auto& connection_pools = sql_connection_pools();
     auto handle = connection_pools.find(handle_id);
     if (handle == connection_pools.end()) {
         free_var(arglist);
@@ -833,10 +787,6 @@ bf_sql_info(Var arglist, Byte next, void *vdata, Objid progr)
 
 void register_sql(void)
 {
-    std::call_once(sql_atfork_once, [] {
-        pthread_atfork(sql_atfork_prepare, sql_atfork_parent, sql_atfork_child);
-    });
-
     oklog("REGISTER_SQL: SQL features are online and enabled!\n");
 #ifdef POSTGRESQL_FOUND
     oklog("  POSTGRESQL_OK: PostgreSQL database feature is enabled.\n");
@@ -844,7 +794,7 @@ void register_sql(void)
 
     register_function("sql_query", 2, 3, bf_sql_query, TYPE_INT, TYPE_STR, TYPE_LIST);
     register_function("sql_connections", 0, 0, bf_sql_connections, TYPE_ANY, TYPE_LIST);
-    register_function("sql_open", 1, 2, bf_sql_open_connection, TYPE_STR, TYPE_INT, TYPE_INT);
+    register_function("sql_open", 1, 1, bf_sql_open_connection, TYPE_STR, TYPE_INT, TYPE_INT);
     register_function("sql_close", 1, 1, bf_sql_close_connection, TYPE_INT, TYPE_ANY);
     register_function("sql_info", 1, 1, bf_sql_info, TYPE_INT, TYPE_ANY);
 }

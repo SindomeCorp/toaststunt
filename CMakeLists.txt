@@ -1,8 +1,8 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.12...4.4)
 set(VERSION_MAJOR 2)
 set(VERSION_MINOR 7)
 set(VERSION_RELEASE 3)
-set(VERSION_EXT "")
+set(VERSION_EXT "_37")
 project(ToastStunt VERSION ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_RELEASE} LANGUAGES CXX C)
 
 # Compile Options
@@ -14,7 +14,11 @@ if( CMAKE_SIZEOF_VOID_P EQUAL 4 )
     set(ONLY_32_BITS true)
 endif()
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/CMakeModules/")
+if(DEFINED CMAKE_MODULE_PATH)
+    list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
+else()
+    set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
+endif()
 
 # Don't bother if we don't have these
 find_package(BISON REQUIRED)
@@ -54,7 +58,8 @@ endif()
 
 # Compiler Flags
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_C_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 99)
 
 # These flags are shared by the RELEASE and WARN build types.
 set(SHARED_COMPILE_FLAGS "-O3")
@@ -75,11 +80,12 @@ set(CMAKE_CXX_FLAGS_WARN "${CMAKE_C_FLAGS_WARN}")
 # Check for memory leaks: Minimal optimizations, debug enabled, and sanitize address
 set(CMAKE_C_FLAGS_LEAKCHECK  "-O1 -g -fsanitize=address -fno-omit-frame-pointer -fno-optimize-sibling-calls")
 set(CMAKE_CXX_FLAGS_LEAKCHECK "${CMAKE_C_FLAGS_LEAKCHECK}")
+set(EXTRA_LINKER_FLAGS "")
 if(CMAKE_BUILD_TYPE MATCHES "LeakCheck")
     set(EXTRA_LINKER_FLAGS "-fsanitize=address")
 endif()
 
-string(TOUPPER ${CMAKE_BUILD_TYPE} CMAKE_BUILD_TYPE_UPPER)
+string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE_UPPER}}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE_UPPER}}")
 
@@ -129,7 +135,13 @@ add_custom_command(
     COMMENT "Generating keywords.cc")
 
 # version_options.h
-execute_process(COMMAND ${PERL_EXECUTABLE} ${CMAKE_SOURCE_DIR}/src/include/version_opt_gen.pl)
+execute_process(
+    COMMAND ${PERL_EXECUTABLE} ${CMAKE_SOURCE_DIR}/src/include/version_opt_gen.pl
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    RESULT_VARIABLE VERSION_OPTIONS_RESULT)
+if(NOT VERSION_OPTIONS_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to generate version_options.h")
+endif()
 
 # Add current version control situation to version_src.h
 set(VERSION_SRC ${CMAKE_BINARY_DIR}/version_src.h)
@@ -155,7 +167,7 @@ else()
 endif()
 find_package(Nettle REQUIRED)
 find_package(Argon2 REQUIRED)
-find_package(PCRE)
+find_package(PCRE2)
 find_package(CURL)
 find_package(ASPELL)
 find_package(SQLite3)
@@ -182,7 +194,7 @@ set(src_CSRCS
     src/http_parser.c
     src/regexpr.c)
 
-if(PCRE_FOUND)
+if(PCRE2_FOUND)
     list(APPEND src_CSRCS src/dependencies/pcrs.c)
 endif()
 
@@ -272,9 +284,9 @@ set(src_SERVER
 add_executable(moo ${src_SERVER})
 
 # Make sure we have the packages we need
-include_directories(${NETTLE_INCLUDE_DIRS})
+include_directories(${NETTLE_INCLUDE_DIR})
 target_link_libraries(moo ${NETTLE_LIBRARIES})
-include_directories(${ARGON2_INCLUDE_DIRS})
+include_directories(${ARGON2_INCLUDE_DIR})
 target_link_libraries(moo ${ARGON2_LIBRARIES})
 include_directories(@{EXPAT_INCLUDE_DIRS})
 target_link_libraries(moo ${EXPAT_LIBRARIES})
@@ -286,9 +298,9 @@ else()
     target_link_libraries(moo Threads::Threads)
 endif()
 
-if(PCRE_FOUND)
-    include_directories(${PCRE_INCLUDE_DIRS})
-    target_link_libraries(moo ${PCRE_LIBRARIES})
+if(PCRE2_FOUND)
+    include_directories(${PCRE2_INCLUDE_DIRS})
+    target_link_libraries(moo ${PCRE2_LIBRARIES})
 endif()
 
 if(CURL_FOUND)
@@ -302,7 +314,7 @@ if(ASPELL_FOUND)
 endif()
 
 if(SQLITE3_FOUND)
-    include_directories(${SQLITE3_INCLUDE_DIRS})
+    include_directories(${SQLITE3_INCLUDE_DIR})
     target_link_libraries(moo ${SQLITE3_LIBRARIES})
 endif()
 

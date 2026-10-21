@@ -1,14 +1,73 @@
 # ToastStunt ChangeLog
+## 2.8.0 (In progress)
+### Bug Fixes
+- Temporarily reenable the emptylist bandaid until we can find the culprit.
+- Fix various race conditions and threading bugs / pitfalls.
+- `occupants()` and `locate_by_name()` are no longer threaded functions, as they do unsafe database accesses.
+- Fixed crash on malloc failure when compiling PCRE patterns.
+- Fixed crash when PCRE substring extraction fails.
+- Fixed generate_json mangling strings with ~0 or ~1 followed by non-hex characters.
+- Fixed the build against Nettle 4.0, which dropped the length argument from its `*_digest` functions.
+- Fixed a heap buffer overflow in `pcre_match()` named-group handling.
+- Fixed `push_output()` dropping connections on zero-length writes.
+- Fixed `compare()` truncating 64-bit integer and object map keys to 32 bits.
+- Fixed a double-free when forking with a non-numeric delay and debug disabled.
+- Fixed `next_recycled_object()` skipping a recycled max object.
+- Fixed --tls-port to actually consider the port, like its shorter equivalent.
+- Fixed `$server_options.max_map_value_bytes` being ignored; map value size limits were read from `max_list_value_bytes` instead.
+- Fixed `curl()`, `url_encode()`, and `url_decode()` leaking their arguments when erroring out early.
+- Fixed a potential stack overflow when parsing JSON documents containing very long strings.
+- Fixed a PCRE2 build issue when TLS support is disabled.
+- Fixed `generate_json()` crashing on boolean map keys and failing to preserve them in embedded-types mode.
+- Fixed property layout corruption when chparenting an object that has a descendant reachable through two parents; the fixup rebuilt each descendant's old ancestor list from the already-updated graph and read and freed past the end of its property array.
+- Fixed `check_for_duplicates()` skipping most pairs, so parent lists like `{a, b, b}` were accepted.
+- Fixed `renumber()` writing one value past a children list, and leaving a stale object number behind in a child's parents, when a parent was repeated.
+- Fixed `recreate()` accepting an invalid parent, which then indexed the object table with a bogus object number.
+- Fixed callable verb lookup, `isa()`, chparent's property check, and `add_property()`'s descendant scan walking every path through the inheritance graph rather than every object, which is exponential with nested diamonds. `isa()` also dereferenced invalid parents and leaked the list.
+- Fixed a bug that would cause indefinitely suspended tasks (via `suspend()` with no arguments) to immediately resume upon rebooting the database.
+- Fixed an invalid free while parsing numeric verb prepositions.
+- Fixed waif self-reference detection to only identify actual self-references while traversing values.
+- In emergency mode, the wizard created for a completely empty database now owns itself instead of retaining an uninitialized owner.
+
+### New Features
+- Updated the CMake configuration for compatibility with CMake 4.4 policies, eliminated configuration warnings, and moved to C++17.
+- `curl()` now accepts an options map as its second argument, extending it into a full HTTP client: `curl(url, ["method" -> "POST", "json" -> value, ...])`. Recognized options:
+    - `"method"`: `"GET"`, `"HEAD"`, `"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`, or `"OPTIONS"` (defaults to `"GET"`, or `"POST"` when a body is supplied)
+    - `"body"`: a (binary) string sent as the request body
+    - `"json"`: any MOO value, serialized as the JSON request body (sets `Content-Type: application/json` unless you provide your own)
+    - `"headers"`: a map of request headers (`["Authorization" -> "Bearer ...", "X-Multi" -> {"a", "b"}]`); names and values are validated so header injection is impossible
+    - `"timeout"`: seconds, between 1 and `$server_options.curl_max_timeout`
+    - `"max_size"`: lower the response size cap for this request
+    - `"follow_redirects"`: follow http(s) redirects, which are never followed by default; `1` (or `true`) uses the default limit of 5 hops, a larger integer sets the limit (up to 20)
+    - `"parse"`: parse the response body as JSON in common-subset mode
+    - `"full"`: return `["status" -> INT, "headers" -> MAP, "body" -> STR|parsed, "url" -> STR]` instead of just the body; repeated response headers accumulate into a list
+    - `"include_headers"`: prepend the raw response headers to the body (equivalent to the legacy second argument)
+    - `"user_agent"`: override the User-Agent header
+
+  Calls without an options map keep the old behavior.
+- New `CURL_ALLOWED_METHODS` compile-time option (options.h): a comma-separated list restricting which request methods curl may use (checked after the method is fully resolved, so it also covers the implicit POST selected by a `"body"`/`"json"` option). For example, `"GET,HEAD"` makes curl read-only. Defaults to all supported methods.
+- curl responses are capped by `$server_options.curl_max_response_bytes` (default 10MB).
+- curl timeouts are limited by `$server_options.curl_max_timeout` (default 300s), with the default set by `$server_options.curl_timeout`.
+- curl advertises `Accept-Encoding` and transparently decodes compressed responses.
+- curl now uses `ToastStunt/<version>` as its default User-Agent.
+- curl transfers abort promptly during server shutdown.
+- curl sets `CURLOPT_NOSIGNAL` for thread safety.
+- Add an optional unclean_shutdown parameter to `shutdown()`, which replicates the functionality found in the `panic()` builtin.
+- Remove the `panic()` builtin.
+- Anonymous children are no longer invalidated when properties change on their parents.
+- Migrated from PCRE to the PCRE2 library. See the README for updated build instructions.
+- JSON null values now map to E_NONE instead of the string "null" when parsing JSON.
+- Allow empty subjects in pcre_match.
+- Add an optional third argument to generate_json to disable binary string escaping.
+
 ## 2.7.3 (Jun 20, 2025)
 ### Bug Fixes
 - `listeners()` now uses the correct key for print-messages.
 - Threaded DNS lookups had an issue that made them freeze the server just as badly as non-threaded DNS lookups. This has been resolved. (See ToastCore for an example implementation of handling slow lookups without allowing a connection to process commands.)
-- `curl` and related functions are now disabled when outbound network connections are disabled.
+- curl and related functions are now disabled when outbound network connections are disabled.
 - Large amounts of input on TLS connections could cause it to fail to go through until the next command. This is now fixed.
 - Fixed waif crashes when indexing nested maps containing waifs.
 - Fixed telnet IAC IAC sequences not being properly handled.
-- PCRE now properly uses JIT compilation when available.
-- Enable support for the Dictionary Server (DICT) protocol when using curl.
 
 ### New Features
 - `open_network_connection` now displays more helpful error messages in-MOO, particularly when catching errors in a try.
@@ -18,13 +77,14 @@
 - Extend `mapdelete()` to accept a list of keys to delete. When passed a list as the second argument, mapdelete() will now delete multiple keys from the map in a single operation. If any key in the list is not found, a descriptive error is raised showing which key was missing.
 - Thread `occupants()` and improve performance when validating large lists of objects. **WARNING**: As with all other threaded functions, using occupants() in situations where it may be called many times, such as in loops, will implicitly suspend the verb akin to how reading input is handled. This may not be what you want! If this is undesirable, use `set_thread_mode(0)` prior to the function call in your verb.
 - Removed `clear_ancestor_cache()` builtin.
+- PCRE now properly uses JIT compilation when available.
+- Enable support for the Dictionary Server (DICT) protocol when using curl.
 
 ## 2.7.2 (Jul 17, 2024)
 ### Bug Fixes
 - Fix memory corruption in the signal handler.
 - Fix buffer overflow in telnet IAC capture.
 - Fix a memory leak when converting from objects to strings in SQLite.
-
 ### New Features
 - Remove the `proxy_rewrite` server option. Instead, you can now add trusted proxy IP addresses to the `$server_options.trusted_proxies` property or the equivalent property on the listening object itself. Any connecting IP found in this list will have the login screen suppressed, and will accept forwarded IP addresses via the HAProxy Proxy protocol, at which point the welcome screen will be printed. To regain the legacy functionality, you can set `$server_options.trusted_proxies` to `{"127.0.0.1", "::1"}`
 - Add a fourth argument to `occupants()` to inverse the parent match.

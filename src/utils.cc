@@ -152,7 +152,7 @@ complex_free_var(Var v)
                 free_str(v.v.str);
             break;
         case TYPE_LIST:
-            if (delref(v.v.list) == 0) {
+            if (v.v.list != emptylist.v.list && delref(v.v.list) == 0) {
                 destroy_list(v);
                 gc_set_color(v.v.list, GC_BLACK);
                 if (!gc_is_buffered(v.v.list))
@@ -224,7 +224,7 @@ complex_free_var(Var v)
                 free_str(v.v.str);
             break;
         case TYPE_LIST:
-            if (delref(v.v.list) == 0)
+            if (v.v.list != emptylist.v.list && delref(v.v.list) == 0)
                 destroy_list(v);
             break;
         case TYPE_MAP:
@@ -410,9 +410,9 @@ compare(Var lhs, Var rhs, int case_matters)
     if (lhs.type == rhs.type) {
         switch (lhs.type) {
             case TYPE_INT:
-                return lhs.v.num - rhs.v.num;
+                return lhs.v.num < rhs.v.num ? -1 : (lhs.v.num > rhs.v.num ? 1 : 0);
             case TYPE_OBJ:
-                return lhs.v.obj - rhs.v.obj;
+                return lhs.v.obj < rhs.v.obj ? -1 : (lhs.v.obj > rhs.v.obj ? 1 : 0);
             case TYPE_ERR:
                 return lhs.v.err - rhs.v.err;
             case TYPE_STR:
@@ -427,12 +427,20 @@ compare(Var lhs, Var rhs, int case_matters)
                     return 0;
                 else
                     return (lhs.v.fnum - rhs.v.fnum) < 0.0 ? -1 : 1;
-            case TYPE_WAIF:
-                return lhs.v.waif == rhs.v.waif ? 0 : 1;
-            case TYPE_ANON:
-                return lhs.v.anon == rhs.v.anon ? 0 : 1;
+            /* Maps keep their keys in a tree ordered by this function, so
+             * two different waifs or anonymous objects need an order too.
+             * Their addresses give one for as long as they live.
+             */
+            case TYPE_WAIF: {
+                const uintptr_t l = (uintptr_t)lhs.v.waif, r = (uintptr_t)rhs.v.waif;
+                return l < r ? -1 : (l > r ? 1 : 0);
+            }
+            case TYPE_ANON: {
+                const uintptr_t l = (uintptr_t)lhs.v.anon, r = (uintptr_t)rhs.v.anon;
+                return l < r ? -1 : (l > r ? 1 : 0);
+            }
             case TYPE_BOOL:
-                return lhs.v.truth == rhs.v.truth ? 0 : 1;
+                return (int)lhs.v.truth - (int)rhs.v.truth;
             default:
                 panic_moo("COMPARE: Invalid value type");
         }

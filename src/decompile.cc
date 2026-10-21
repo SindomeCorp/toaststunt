@@ -295,6 +295,9 @@ finish_while:
                 push_expr((Expr *)HOT_OP(e));
                 break;
             case OP_G_PUSH:
+#ifdef BYTECODE_REDUCE_REF
+            case OP_G_PUSH_CLEAR:
+#endif              /* BYTECODE_REDUCE_REF */
                 e = alloc_expr(EXPR_ID);
                 e->e.id = READ_ID();
                 push_expr((Expr *)HOT_OP(e));
@@ -794,8 +797,12 @@ finish_indexed_assignment:
                         else
                             s->s.exit = -1;
                         READ_STACK();
-                        if (READ_LABEL() < ptr - bc.vector)
-                            s->kind = STMT_CONTINUE;
+                        {
+                            unsigned label = READ_LABEL();
+
+                            if (label < ptr - bc.vector)
+                                s->kind = STMT_CONTINUE;
+                        }
                         ADD_STMT((Stmt *)HOT_OP(s));
                         break;
 

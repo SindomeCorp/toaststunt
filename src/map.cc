@@ -28,6 +28,7 @@
  *****************************************************************************/
 
 #include <assert.h>
+#include <mutex>
 
 #include <string.h>
 
@@ -599,9 +600,11 @@ Var
 new_map(void)
 {
     static Var map;
+    static std::once_flag map_init;
 
-    if (map.v.tree == nullptr)
+    std::call_once(map_init, []() {
         map = empty_map();
+    });
 
 #ifdef ENABLE_GC
     assert(gc_get_color(map.v.tree) == GC_GREEN);
@@ -1018,7 +1021,7 @@ bf_mapdelete(Var arglist, Byte next, void *vdata, Objid progr)
         int count = key_arg.v.list[0].v.num;
         for (int i = 1; i <= count; i++) {
             Var key = key_arg.v.list[i];
-            if (key.is_collection()) {
+            if (key.is_collection() && TYPE_ANON != key.type) {
                 free_var(r);
                 free_var(arglist);
                 return make_error_pack(E_TYPE);
@@ -1041,7 +1044,7 @@ bf_mapdelete(Var arglist, Byte next, void *vdata, Objid progr)
         }
     } else {
         /* Delete single key */
-        if (key_arg.is_collection()) {
+        if (key_arg.is_collection() && TYPE_ANON != key_arg.type) {
             free_var(r);
             free_var(arglist);
             return make_error_pack(E_TYPE);
@@ -1119,7 +1122,7 @@ static package
 bf_maphaskey(Var arglist, Byte next, void *vdata, Objid progr)
 {
     Var key = arglist.v.list[2];
-    if (key.is_collection()) {
+    if (key.is_collection() && TYPE_ANON != key.type) {
         free_var(arglist);
         return make_error_pack(E_TYPE);
     }
