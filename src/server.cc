@@ -1055,6 +1055,7 @@ emergency_mode()
             if (!is_wizard(wizard)) {
                 if (first_valid < 0) {
                     first_valid = db_create_object(-1);
+                    db_set_object_owner(first_valid, first_valid);
                     db_change_parents(Var::new_obj(first_valid), new_list(0), none);
                     printf("** No objects in database; created #%" PRIdN ".\n",
                            first_valid);
@@ -1689,8 +1690,12 @@ player_connected(Objid old_id, Objid new_id, bool is_newly_created)
         if (new_h->print_messages)
             send_message(new_h->listener, new_h->nhandle, "redirect_to_msg",
                          "*** Redirecting old connection to this port ***", 0);
-        network_close(existing_h->nhandle);
-        free_shandle(existing_h);
+        if (get_nhandle_refcount(existing_h->nhandle) > 1) {
+            existing_h->disconnect_me = true;
+        } else {
+            network_close(existing_h->nhandle);
+            free_shandle(existing_h);
+        }
         if (existing_listener == new_h->listener)
             call_notifier(new_id, new_h->listener, "user_reconnected");
         else {
@@ -1745,8 +1750,12 @@ player_switched(Objid old_id, Objid new_id, bool silent)
         if (!silent && new_h->print_messages)
             send_message(new_h->listener, new_h->nhandle, "redirect_to_msg",
                          "*** Redirecting old connection to this port ***", 0);
-        network_close(existing_h->nhandle);
-        free_shandle(existing_h);
+        if (get_nhandle_refcount(existing_h->nhandle) > 1) {
+            existing_h->disconnect_me = true;
+        } else {
+            network_close(existing_h->nhandle);
+            free_shandle(existing_h);
+        }
     } else {
         if (!silent && new_h->print_messages)
             send_message(new_h->listener, new_h->nhandle, "connect_msg",
@@ -1973,7 +1982,7 @@ main(int argc, char **argv)
         {"outbound",        no_argument,        nullptr,            'o'},
         {"no-outbound",     no_argument,        nullptr,            'O'},
         {"no-ipv6",         no_argument,        nullptr,            '3'},
-        {"tls-port",        no_argument,        nullptr,            't'},
+        {"tls-port",        required_argument,  nullptr,            't'},
         {"ipv4",            required_argument,  nullptr,            '4'},
         {"ipv6",            required_argument,  nullptr,            '6'},
         {"port",            required_argument,  nullptr,            'p'},
@@ -2575,48 +2584,34 @@ bf_usage(Var arglist, Byte next, void *vdata, Objid progr)
     return make_var_pack(r);
 }
 
-/* Unceremoniously exit the server, creating a panic dump of the database. */
-static package
-bf_panic(Var arglist, Byte next, void *vdata, Objid progr)
-{
-    const char *msg;
-
-    if (!is_wizard(progr)) {
-        free_var(arglist);
-        return make_error_pack(E_PERM);
-    }
-
-    if (arglist.v.list[0].v.num) {
-        msg = str_dup(arglist.v.list[1].v.str);
-    } else {
-        msg = "";
-    }
-
-    free_var(arglist);
-    panic_moo(msg);
-
-    return make_error_pack(E_NONE);
-}
-
-
 static package
 bf_shutdown(Var arglist, Byte next, void *vdata, Objid progr)
 {
-    int nargs = arglist.v.list[0].v.num;
+    const int nargs = arglist.v.list[0].v.num;
     const char *message = (nargs >= 1 ? arglist.v.list[1].v.str : nullptr);
+    const int unclean_shutdown = (nargs >= 2 ? is_true(arglist.v.list[2]) : 0);
 
     if (!is_wizard(progr)) {
         free_var(arglist);
         return make_error_pack(E_PERM);
     }
 
-    shutdown_triggered = true;
-    shutdown_message << "shutdown() called by " << object_name(progr);
-    if (message)
-        shutdown_message << ": " << message;
+    if (unclean_shutdown) {
+        /* Unclean shutdown - unceremoniously exit the server, creating a panic dump of the database */
+        const char *panic_msg = message ? str_dup(message) : "";
+        free_var(arglist);
+        panic_moo(panic_msg);
+        return make_error_pack(E_NONE);
+    } else {
+        /* Clean shutdown */
+        shutdown_triggered = true;
+        shutdown_message << "shutdown() called by " << object_name(progr);
+        if (message)
+            shutdown_message << ": " << message;
 
-    free_var(arglist);
-    return no_var_pack();
+        free_var(arglist);
+        return no_var_pack();
+    }
 }
 
 static package
@@ -2869,18 +2864,24 @@ name_lookup_callback(Var arglist, Var *ret, void *extra_data)
 {
     int nargs = arglist.v.list[0].v.num;
     Objid who = arglist.v.list[1].v.obj;
-    shandle *h = find_shandle(who);
     bool rewrite_connect_name = nargs > 1 && is_true(arglist.v.list[2]);
 
     network_handle nh;
     nh.ptr = extra_data;
 
-    if (!h || h->disconnect_me)
+    bool valid_connection;
+    {
+        std::lock_guard<std::recursive_mutex> lock(all_shandles_mutex);
+        shandle *h = find_shandle(who);
+        valid_connection = h && !h->disconnect_me.load();
+    }
+
+    if (!valid_connection)
         make_error_map(E_INVARG, "Invalid connection", ret);
     else
     {
         const char *name;
-        int status = lookup_network_connection_name(h->nhandle, &name);
+        int status = lookup_network_connection_name(nh, &name);
 
         /* If the server is shutting down, this is meaningless and creates
          * a bit of a mess anyway. So don't bother continuing. */
@@ -3280,8 +3281,7 @@ register_server(void)
     register_function("malloc_stats", 0, 0, bf_malloc_stats);
 #endif
     register_function("usage", 0, 0, bf_usage);
-    register_function("panic", 0, 1, bf_panic, TYPE_STR);
-    register_function("shutdown", 0, 1, bf_shutdown, TYPE_STR);
+    register_function("shutdown", 0, 2, bf_shutdown, TYPE_STR, TYPE_ANY);
     register_function("dump_database", 0, 0, bf_dump_database);
     register_function("db_disk_size", 0, 0, bf_db_disk_size);
     register_function("open_network_connection", 2, 3, bf_open_network_connection,

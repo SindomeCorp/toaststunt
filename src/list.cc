@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <algorithm> // std::sort
 #include "dependencies/strnatcmp.c" // natural sorting
+#include <mutex>
 #include <vector>
 
 #include <ctype.h>
@@ -43,6 +44,11 @@
 #include "background.h"   // Threads
 #include "random.h"
 
+/* Bandaid: Something is killing all of our references to the
+ * empty list, which is causing the server to crash. So this is
+ * now a global and utils.cc won't free the list if it's emptylist. */
+Var emptylist;
+
 Var
 new_list(int size)
 {
@@ -50,17 +56,18 @@ new_list(int size)
     Var *ptr;
 
     if (size == 0) {
-        static Var emptylist;
+        static std::once_flag emptylist_init;
 
-        if (emptylist.v.list == nullptr) {
-            if ((ptr = (Var *)mymalloc(1 * sizeof(Var), M_LIST)) == nullptr)
+        std::call_once(emptylist_init, []() {
+            Var *ptr = (Var *)mymalloc(1 * sizeof(Var), M_LIST);
+            if (ptr == nullptr)
                 panic_moo("EMPTY_LIST: mymalloc failed");
 
             emptylist.type = TYPE_LIST;
             emptylist.v.list = ptr;
             emptylist.v.list[0].type = TYPE_INT;
             emptylist.v.list[0].v.num = 0;
-        }
+        });
 
 #ifdef ENABLE_GC
         assert(gc_get_color(emptylist.v.list) == GC_GREEN);
@@ -193,7 +200,8 @@ doinsert(Var list, Var value, int pos)
     int i;
     int size = list.v.list[0].v.num + 1;
 
-    if (var_refcount(list) == 1 && pos == size) {
+    /* Bandaid: See the top of list.cc for an explanation */
+    if (list.v.list != emptylist.v.list && var_refcount(list) == 1 && pos == size) {
         list.v.list = (Var *) myrealloc(list.v.list, (size + 1) * sizeof(Var), M_LIST);
 #ifdef MEMO_SIZE
         /* reset the memoized size */

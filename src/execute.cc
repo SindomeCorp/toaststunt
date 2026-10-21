@@ -1852,6 +1852,23 @@ finish_comparison:
             }
             break;
 
+#ifdef BYTECODE_REDUCE_REF
+            case OP_G_PUSH_CLEAR:
+            {
+                int var_pos = READ_BYTES(bv, bc.numbytes_var_name);
+                Var *vp = &RUN_ACTIV.rt_env[var_pos];
+                if (vp->type == TYPE_NONE) {
+                    Var not_found = str_ref_to_var(*(&RUN_ACTIV.prog->var_names[var_pos]));
+                    var_ref(nothing);
+                    PUSH_X_NOT_FOUND(E_VARNF, not_found, nothing);
+                } else {
+                    PUSH(*vp);
+                    vp->type = TYPE_NONE;
+                }
+            }
+            break;
+#endif              /* BYTECODE_REDUCE_REF */
+
             case OP_GET_PROP:
             {
                 Var propname, obj, prop;
@@ -2096,6 +2113,7 @@ finish_comparison:
                     var_type time_type = time.type;
                     free_var(time);
                     RAISE_TYPE_MISMATCH(2, time_type, TYPE_INT, TYPE_FLOAT);
+                    break;
                 }
                 when = time.type == TYPE_INT ? time.v.num : time.v.fnum;
                 free_var(time);
