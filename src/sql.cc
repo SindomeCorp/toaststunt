@@ -192,6 +192,7 @@ class Uri {
 
 class SQLSession {
     public:
+        virtual ~SQLSession() = default;
         virtual void query(
             std::string statement,
             Var* bind,
@@ -399,8 +400,14 @@ class PostgreSQLSession: public SQLSession {
                     res = txn.exec(statement);
                 }
 
+                // Keep ownership until COMMIT succeeds; a failed attempt must
+                // free its rows without touching the caller's output.
+                struct ResultOwner {
+                    Var value = new_list(0);
+                    ~ResultOwner() { free_var(value); }
+                } result;
+
                 // Build MOO list-of-rows -> list-of-columns
-                *ret = new_list(0);
                 for (auto row: res) {
                     Var rv = new_list(0);
                     for (auto col: row) {
@@ -418,11 +425,13 @@ class PostgreSQLSession: public SQLSession {
 
                         rv = listappend(rv, column);
                     }
-                    *ret = listappend(*ret, rv);
+                    result.value = listappend(result.value, rv);
                 }
 
                 res.clear();
                 txn.commit();
+                *ret = result.value;
+                result.value = none;
             } catch (const pqxx::broken_connection &) {
                 this->broken_connection = true;
                 throw;  // caller will handle retry/expiration
