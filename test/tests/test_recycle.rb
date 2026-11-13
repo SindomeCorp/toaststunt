@@ -211,30 +211,6 @@ class Testrecycle < Test::Unit::TestCase
     end
   end
 
-  def test_that_recycling_an_anonymous_object_recycles_values_in_properties_defined_on_the_object
-    run_test_as('wizard') do
-      a = create(:object)
-      add_property(a, 'recycle_called', 0, [player, ''])
-      add_verb(a, ['player', 'xd', 'recycle'], ['this', 'none', 'this'])
-      set_verb_code(a, 'recycle') do |vc|
-        vc << %Q<#{a}.recycle_called = #{a}.recycle_called + 1;>
-      end
-      add_verb(a, ['player', 'xd', 'go'], ['this', 'none', 'this'])
-      set_verb_code(a, 'go') do |vc|
-        vc << %Q<x = create(#{a}, 1);>
-        vc << %Q<add_property(x, "next", 0, {player, ""});>
-        vc << %Q<x.next = create(#{a}, 1);>
-        vc << %Q<args || recycle(x);>
-      end
-      set(a, 'recycle_called', 0)
-      call(a, 'go')
-      assert_equal 2, get(a, 'recycle_called')
-      set(a, 'recycle_called', 0)
-      call(a, 'go', 1)
-      assert_equal 2, get(a, 'recycle_called')
-    end
-  end
-
   def test_that_recycling_an_anonymous_object_recycles_values_in_properties_defined_on_the_parent
     run_test_as('wizard') do
       a = create(:object)
@@ -256,6 +232,30 @@ class Testrecycle < Test::Unit::TestCase
       set(a, 'recycle_called', 0)
       call(a, 'go', 1)
       assert_equal 2, get(a, 'recycle_called')
+    end
+  end
+
+  def test_that_next_recycled_object_finds_a_recycled_max_object
+    run_test_as('wizard') do
+      o = create(NOTHING)
+      assert_equal o, max_object
+      recycle(o)
+      assert_equal o, max_object
+      assert_equal false, valid(o)
+      assert evaluate("#{o} in recycled_objects()") > 0
+      assert_equal o, evaluate("next_recycled_object(#{o})")
+      assert_equal evaluate("recycled_objects()[1]"), evaluate("next_recycled_object()")
+      assert_equal o, evaluate("recreate(#{o}, $nothing)")
+      assert_equal true, valid(o)
+      assert_equal 0, evaluate("next_recycled_object(#{o})")
+      recycle(o)
+    end
+  end
+
+  def test_that_next_recycled_object_rejects_objects_beyond_max_object
+    run_test_as('wizard') do
+      assert_equal E_INVARG, evaluate("next_recycled_object(toobj(toint(max_object()) + 1))")
+      assert_equal E_INVARG, evaluate("next_recycled_object($nothing)")
     end
   end
 

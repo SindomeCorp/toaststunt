@@ -120,6 +120,7 @@ typedef enum {
 
 #define TYPE_ANY ((var_type) -1)	/* wildcard for use in declaring built-ins */
 #define TYPE_NUMERIC ((var_type) -2)	/* wildcard for (integer or float) */
+#define TYPE_FLAG ((var_type) -3)	/* wildcard for (integer or boolean) */
 
 typedef struct Var Var;
 
@@ -229,6 +230,14 @@ typedef struct Waif {
 	v.type = TYPE_OBJ;
 	v.v.obj = obj;
 	return v;
+    }
+
+    static Var
+    new_anon(Object *anon) {
+        Var v;
+        v.type = TYPE_ANON;
+        v.v.anon = anon;
+        return v;
     }
 
     bool

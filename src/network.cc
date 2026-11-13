@@ -341,7 +341,7 @@ push_output(nhandle * h)
 #endif
             count = write(h->wfd, b->start, b->length);
 #ifdef USE_TLS
-        if (count <= 0) {
+        if (count < 0 || (count == 0 && h->tls)) {
             if (h->tls) {
                 int error = SSL_get_error(h->tls, count);
                 if (error == SSL_ERROR_WANT_WRITE || error == SSL_ERROR_WANT_READ || errno == eagain || errno == ewouldblock)
@@ -683,7 +683,7 @@ close_nlistener(nlistener * l)
     free_str(l->name);
     free_str(l->ip_addr);
 #ifdef USE_TLS
-    if (l->tls_key_path)
+    if (l->tls_certificate_path)
         free_str(l->tls_certificate_path);
     if (l->tls_key_path)
         free_str(l->tls_key_path);
@@ -1487,7 +1487,7 @@ rewrite_connection_name(const network_handle nh, const char *destination, const 
     struct addrinfo *address;
     int ret = 0, status = getaddrinfo(source, source_port, &tcp_hint, &address);
 
-    if (status < 0) {
+    if (status != 0) {
         errlog("getaddrinfo failed while rewriting connection_name: %s\n", gai_strerror(status));
         ret = -1;
     } else {
@@ -1583,10 +1583,14 @@ lookup_network_connection_name(const network_handle nh, const char **name)
     const nhandle *h = (nhandle *) nh.ptr;
     int retval = 0;
 
-    struct addrinfo *address = 0;
-    int status = getaddrinfo(h->destination_ipaddr, nullptr, &tcp_hint, &address);
+    pthread_mutex_lock(h->name_mutex);
+    const char *ipaddr_copy = str_dup(h->destination_ipaddr);
+    pthread_mutex_unlock(h->name_mutex);
 
-    if (status < 0) {
+    struct addrinfo *address = 0;
+    int status = getaddrinfo(ipaddr_copy, nullptr, &tcp_hint, &address);
+
+    if (status != 0) {
         // Better luck next time.
         pthread_mutex_lock(h->name_mutex);
         *name = str_dup(h->name);
@@ -1595,6 +1599,9 @@ lookup_network_connection_name(const network_handle nh, const char **name)
     } else {
         *name = get_nameinfo(address->ai_addr);
     }
+
+    free_str(ipaddr_copy);
+
     if (address)
         freeaddrinfo(address);
 

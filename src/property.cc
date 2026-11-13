@@ -157,7 +157,7 @@ set_prop_info(Var obj, const char *pname, Var info, Objid progr)
     enum error e;
     db_prop_handle h;
 
-    if (!obj.is_object())
+    if (!obj.is_obj())
         e = E_TYPE;
     else if (!is_valid(obj))
         e = E_INVARG;
@@ -217,7 +217,7 @@ bf_add_prop(Var arglist, Byte next, void *vdata, Objid progr)
 
     if ((e = validate_prop_info(info, &owner, &flags, &new_name)) != E_NONE)
         ; /* already failed */
-    else if (new_name || !obj.is_object())
+    else if (new_name || !obj.is_obj())
         e = E_TYPE;
     else if (!is_valid(obj))
         e = E_INVARG;
@@ -242,9 +242,9 @@ bf_delete_prop(Var arglist, Byte next, void *vdata, Objid progr)
     const char *pname = arglist.v.list[2].v.str;
     enum error e = E_NONE;
 
-    if (!obj.is_object())
+    if (!obj.is_obj())
         e = E_TYPE;
-    if (!is_valid(obj))
+    else if (!is_valid(obj))
         e = E_INVARG;
     else if (!db_object_allows(obj, progr, FLAG_WRITE))
         e = E_PERM;
@@ -329,6 +329,40 @@ bf_is_clear_prop(Var arglist, Byte next, void *vdata, Objid progr)
         return make_error_pack(e);
 }
 
+static package
+bf_property_exists(Var arglist, Byte next, void *vdata, Objid progr)
+{   /* (object, prop-name [, direct-only]) */
+    Var obj = arglist.v.list[1];
+    const char *pname = arglist.v.list[2].v.str;
+    int direct = 0;
+    db_prop_handle h;
+    Var r;
+
+    if (arglist.v.list[0].v.num == 3)
+        direct = is_true(arglist.v.list[3]);
+
+    if (!obj.is_object()) {
+        free_var(arglist);
+        return make_error_pack(E_TYPE);
+    }
+    else if (!is_valid(obj)) {
+        free_var(arglist);
+        return make_error_pack(E_INVARG);
+    }
+
+    h = db_find_property(obj, pname, nullptr);
+    free_var(arglist);
+
+    if (!h.ptr)
+        r = Var::new_int(0);
+    else if (!db_is_property_built_in(h) && !db_property_allows(h, progr, PF_READ))
+        return make_error_pack(E_PERM);
+    else
+        r = Var::new_int(!direct || db_is_property_defined_on(h, obj));
+
+    return make_var_pack(r);
+}
+
 void
 register_property(void)
 {
@@ -346,4 +380,6 @@ register_property(void)
                              TYPE_ANY, TYPE_STR);
     (void) register_function("is_clear_property", 2, 2, bf_is_clear_prop,
                              TYPE_ANY, TYPE_STR);
+    (void) register_function("property_exists", 2, 3, bf_property_exists,
+                             TYPE_ANY, TYPE_STR, TYPE_INT);
 }

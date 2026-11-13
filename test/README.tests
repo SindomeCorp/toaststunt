@@ -28,3 +28,20 @@ To run the tests:
 
 9) Clean up the moo executable and the files created in /tmp:
     make clean
+
+Native PostgreSQL ownership regressions can run independently of the MOO test
+server. They require PostgreSQL server tools (located through pg_config), Python
+3, GNU objcopy, and a CMake Unix Makefiles LeakCheck build with PostgreSQL support.
+Run as a regular user (PostgreSQL initdb refuses root):
+
+    cmake -S . -B /tmp/toaststunt-sql-tests -G 'Unix Makefiles' -DCMAKE_BUILD_TYPE=LeakCheck -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    cmake --build /tmp/toaststunt-sql-tests -j2
+    python3 test/run_sql_ownership.py /tmp/toaststunt-sql-tests
+
+The runner reuses the freshly built server objects, starts a private temporary
+PostgreSQL instance with TCP disabled, and stops/removes it afterward. It checks
+successful rows, statement errors, deferred-constraint COMMIT failures, untouched
+output on failure, recovery, pool expiration and shutdown. Each case repeats five
+times and runs garbage collection followed by an explicit LeakSanitizer check;
+AddressSanitizer also detects invalid deletion through the SQLSession base class.
+Rebuild before rerunning after any source change.
