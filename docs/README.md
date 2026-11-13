@@ -73,6 +73,9 @@ ToastStunt is a network accessible, multi-user, programmable, interactive system
 - [Many miscellaneous changes](Features/new_miscellaneous.md)
 
 ## Build Instructions
+
+For Sindome deployments on Ubuntu 26.04, use the [Sindome build and install guide](SINDOME.md#ubuntu-2604), including the private libpqxx 7.10.7 build.
+
 ### **Debian/Ubuntu/WSL**
 ```bash
 apt install build-essential bison gperf cmake libsqlite3-dev libaspell-dev libpcre2-dev nettle-dev g++ libcurl4-openssl-dev libargon2-dev libssl-dev

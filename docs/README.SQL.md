@@ -51,16 +51,17 @@ PostgreSQL
 ----------
 
 ### **Debian/Ubuntu/WSL**
-As of 3/28/22 this was: 6.4.5, so it needs to be manually compiled.
-```bash
-git clone https://github.com/jtv/libpqxx.git
-cd libpqxx
-git checkout 7.6
-sudo apt install libpq-dev libpq5
-cmake .
-make
-sudo make install
-```
+For Sindome on **Ubuntu 26.04**, follow the complete
+[Ubuntu build instructions in SINDOME.md](SINDOME.md#ubuntu-2604).
+They build **libpqxx 7.10.7** as a private shared library with matching headers,
+then reconfigure the existing ToastStunt build with explicit library/header paths
+and RUNPATH. They also cover required dependencies (including `libpcre2-dev`),
+checkpoint/reload/shutdown tests, and production startup considerations.
+
+Do not use the older system-wide `7.6` install procedure on Ubuntu 26.04. The
+`7.10.0-2build1` shared package reproduced exit-time double-frees in this setup;
+upgrading only the library while retaining old headers is not the tested fix.
+System `libpq-dev` and `libpq5` remain the C-library dependency.
 
 ### **Gentoo**
 As of 3/28/22 this was: 7.4.1, so it needs to be manually compiled.
