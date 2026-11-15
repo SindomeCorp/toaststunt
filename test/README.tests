@@ -28,3 +28,13 @@ To run the tests:
 
 9) Clean up the moo executable and the files created in /tmp:
     make clean
+
+The verb-count snapshot integration test needs access to the test server's log.
+Start the server with `./moo -l /tmp/toaststunt-test.log Test.db /dev/null 9898`,
+then run:
+
+    TOAST_VERB_COUNTS_LOG=/tmp/toaststunt-test.log.verb_counts bundle exec ruby -Itests/lib tests/test_verb_counts.rb
+
+This test resets the test server's counters and waits up to 35 seconds for the
+next periodic snapshot. Without the environment variable, snapshot verification
+is omitted and builtin permission/argument checks still run.

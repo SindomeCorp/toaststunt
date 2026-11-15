@@ -158,6 +158,7 @@ extern bool get_thread_mode();
 extern void set_thread_mode(bool mode);
 #ifdef ENABLE_VERB_COUNTS
 extern std::vector<std::pair<std::string, uint64_t>> snapshot_verb_invocation_counts();
+extern void clear_verb_invocation_counts();
 #endif
 
 #endif

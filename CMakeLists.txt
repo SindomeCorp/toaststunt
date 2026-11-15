@@ -285,6 +285,9 @@ set(src_SERVER
     ${src_CXXSRCS})
 
 add_executable(moo ${src_SERVER})
+if(ENABLE_VERB_COUNTS OR ENABLE_BUILTIN_COUNTS)
+    target_sources(moo PRIVATE src/count_changes.cc)
+endif()
 if(ENABLE_BENCHMARK)
     target_sources(moo PRIVATE src/benchmark.cc)
 endif()

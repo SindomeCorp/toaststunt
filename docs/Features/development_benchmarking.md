@@ -49,8 +49,9 @@ No installation or service restart is part of these commands.
 
 With counts OFF, counter storage, invocation increments, snapshot timer, and
 count-log handling are compiled out. No `.verb_counts` file is opened or
-created; an older existing file is left alone. This branch has no count-query or
-`clear_verb_counts()` builtin. Local changes in another checkout are not imported.
+created; an older existing file is left alone. There is no count-query builtin. With counts ON, the locally retained wizard-only
+`clear_verb_counts()` resets verb totals and immediately appends an empty snapshot;
+it does not reset builtin counts.
 
 With benchmarking OFF, `benchmark_call` is absent from builtin registration.
 The accounting implementation is not linked, and tick, dispatch, suspension,
@@ -129,6 +130,41 @@ exclusion, actual 15-second updates, bounded replacement, and I/O error recovery
 The disabled test waits beyond one reporting interval and checks file absence.
 These counters add a per-invocation increment and periodic snapshot I/O when ON.
 
+## Changes since the previous write
+
+Both count outputs retain their existing `counts` mapping and now add a parallel
+`changes` mapping. For example, `"counts":{"ancestors":1050}` with
+`"changes":{"ancestors":50}` means 50 additional calls since the previous
+comparable snapshot containing 1,000 calls. Changes are interval totals, not
+calls per second. An unchanged counter has change `0`.
+
+Before each write, the server reads the latest complete snapshot from the same
+file. It reads at most the last 1 MiB, so the verb append log does not require a
+full-history scan. Builtins still replace their file about every 15 seconds;
+verbs still append a top-50 snapshot about every 30 seconds. A failed write does
+not advance the on-disk baseline, so the next successful change spans that gap.
+
+A `session` token distinguishes process runs, and `generation` advances when
+`clear_verb_counts()` resets verb totals. Missing files, old-format snapshots,
+malformed/unreadable/oversized records, new sessions, different reset generations,
+missing keys, and decreasing totals produce JSON `null` for the affected change.
+In particular, a verb newly entering the top 50 may have prior calls that were
+not present in the preceding snapshot, so its change is unknown rather than
+assumed to equal its total. Incomplete trailing append records are ignored.
+
+The local viewers show **TOTAL** and **CHANGE**, with comma grouping for both;
+`—` means no comparable baseline. The refreshing builtin viewer remains top 50,
+the refreshing verb viewer remains top 25, and the one-shot verb script remains
+top 50. The server must run the rebuilt binary to produce the new fields;
+viewing snapshots from the older binary shows `—` in the change column.
+
+For a raw builtin query:
+
+```bash
+jq '. as $s | .counts | to_entries | sort_by(.value) | reverse | .[:50][] |
+    {builtin: .key, total: .value, change: $s.changes[.key]}' development.log.builtin_counts
+```
+
 ## Benchmark a verb
 
 With `ENABLE_BENCHMARK=ON`, a wizard can profile a known callable verb:
@@ -191,7 +227,7 @@ key order breaking ties. Resolved calls increment counters; resuming a suspended
 call does not count it again. The timer requests a flush approximately every
 30 seconds; a busy main loop can delay it. Each emitted line is flushed.
 
-Despite the `window_seconds` field, totals are cumulative since process start,
+Despite the `window_seconds` field, totals are cumulative since process start or the last `clear_verb_counts()` reset,
 not per-window rates. Do not sum successive snapshots. Missing entries can
 simply be outside the top 50. Restart resets in-memory counts, but appended old
 snapshots remain; the records do not carry a process ID. There is no explicit

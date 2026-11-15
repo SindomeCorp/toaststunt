@@ -12,6 +12,7 @@
     - spellcheck (uses Aspell to check spelling)
     - locations (recursive location function)
     - clear_ancestor_cache (clears the ancestor cache manually)
+    - clear_verb_counts (wizard-only; resets cumulative verb invocation counts and immediately appends an empty counts snapshot)
     - chr (return extended ASCII characters; characters that can corrupt your database are considered invalid)
     - reseed_random (reseed the random number generator)
     - yin (yield if needed. Replicates :suspend_if_needed and ticks_left() checks)
@@ -32,3 +33,17 @@
 
 Wizard-only cumulative VM ticks and active interpreter-thread CPU for a verb call.
 See [benchmark_call](benchmark_call.md) for result fields, suspension, and restart semantics.
+
+### clear_verb_counts()
+
+Call `clear_verb_counts()` with wizard permissions to start a fresh verb-count
+measurement window, for example after startup tasks finish or after changing a
+verb. It takes no arguments and returns `0`. Non-wizards receive `E_PERM`.
+
+The reset clears the server's in-memory invocation counters and immediately
+appends an empty snapshot to `<logfile>.verb_counts`. Subsequent snapshots,
+written every 30 seconds, contain cumulative counts since the most recent reset.
+Earlier snapshots and `<logfile>.trace` are preserved. Calls entered before the
+reset are excluded, even if they finish afterward; calls entered afterward count
+normally. The reset does not change how receivers and verb names are grouped.
+See [Verb tracking](verb_tracking.md) for snapshot and trace fields and limitations.

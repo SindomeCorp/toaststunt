@@ -47,6 +47,9 @@
 #include <netinet/in.h>
 
 #include "config.h"
+#ifdef ENABLE_VERB_COUNTS
+#include "count_changes.h"
+#endif
 #include "db.h"
 #include "db_io.h"
 #include "disassemble.h"
@@ -579,6 +582,8 @@ append_json_escaped(Stream *s, const char *value)
     }
 }
 
+static uint64_t verb_counts_generation = 0;
+
 static void
 flush_verb_counts_log()
 {
@@ -606,10 +611,27 @@ flush_verb_counts_log()
         append_json_escaped(line, snapshot[i].first.c_str());
         stream_printf(line, "\":%llu", (unsigned long long)snapshot[i].second);
     }
-    stream_add_string(line, "}}");
+    stream_add_char(line, '}');
+    append_count_changes(line, get_verb_counts_log_file_name(), snapshot, verb_counts_generation);
+    stream_add_char(line, '}');
 
     verb_counts_log_emit(reset_stream(line));
     free_stream(line);
+}
+
+static package
+bf_clear_verb_counts(Var arglist, Byte next, void *vdata, Objid progr)
+{
+    free_var(arglist);
+    if (!is_wizard(progr))
+        return make_error_pack(E_PERM);
+
+    clear_verb_invocation_counts();
+    ++verb_counts_generation;
+    /* Publish the reset immediately instead of leaving the previous totals
+       as the latest snapshot until the next timer tick. */
+    flush_verb_counts_log();
+    return no_var_pack();
 }
 
 #endif // ENABLE_VERB_COUNTS
@@ -3438,6 +3460,9 @@ bool is_shutdown_triggered()
 void
 register_server(void)
 {
+#ifdef ENABLE_VERB_COUNTS
+    register_function("clear_verb_counts", 0, 0, bf_clear_verb_counts);
+#endif
     register_function("server_version", 0, 1, bf_server_version, TYPE_ANY);
     register_function("renumber", 1, 1, bf_renumber, TYPE_OBJ);
     register_function("reset_max_object", 0, 0, bf_reset_max_object);

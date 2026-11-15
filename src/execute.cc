@@ -137,6 +137,13 @@ snapshot_verb_invocation_counts()
     return snapshot;
 }
 
+void
+clear_verb_invocation_counts()
+{
+    std::lock_guard<std::mutex> lock(verb_invocation_counts_mutex);
+    verb_invocation_counts.clear();
+}
+
 #endif // ENABLE_VERB_COUNTS
 
 static bool

@@ -41,6 +41,7 @@ void verb_counts_log_emit(const char *line);
 #endif // ENABLE_VERB_COUNTS
 
 #ifdef ENABLE_BUILTIN_COUNTS
+const char *get_builtin_counts_snapshot_name();
 void set_builtin_counts_snapshot_name(const char *base);
 void write_builtin_counts_snapshot(const char *line);
 #endif

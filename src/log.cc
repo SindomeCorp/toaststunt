@@ -207,6 +207,12 @@ verb_counts_log_emit(const char *line)
 #ifdef ENABLE_BUILTIN_COUNTS
 static std::string builtin_counts_snapshot_name;
 
+const char *
+get_builtin_counts_snapshot_name()
+{
+    return builtin_counts_snapshot_name.c_str();
+}
+
 void
 set_builtin_counts_snapshot_name(const char *base)
 {

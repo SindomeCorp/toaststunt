@@ -26,7 +26,7 @@ for full_trace in (False, True):
                 return bench.evaluate(stream, code)
             present = evaluate('return `function_info("benchmark_call") ! E_INVARG => 0\';')
             assert (present != '{1, 0}') == benchmark, present
-            assert evaluate('return `function_info("clear_verb_counts") ! E_INVARG => 0\';') == '{1, 0}'
+            assert (evaluate('return `function_info("clear_verb_counts") ! E_INVARG => 0\';') != '{1, 0}') == counts
             obj = evaluate('return create($nothing);').removeprefix('{1, ').removesuffix('}')
             assert evaluate(f'add_verb({obj}, {{player,"xd","diagnostic_probe"}}, {{"this","none","this"}}); return set_verb_code({obj},"diagnostic_probe",{{"return 42;"}});') == '{1, {}}'
             assert evaluate(f'return {obj}:diagnostic_probe();') == '{1, 42}'

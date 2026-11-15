@@ -20,6 +20,7 @@
 #include "config.h"
 #ifdef ENABLE_BUILTIN_COUNTS
 #include <cstdint>
+#include "count_changes.h"
 #include <ctime>
 #include <unistd.h>
 #endif
@@ -225,6 +226,9 @@ number_func_by_name(const char *name)
 void
 flush_builtin_counts_snapshot()
 {
+    std::vector<std::pair<std::string, uint64_t>> counts;
+    for (unsigned i = 0; i < top_bf_table; ++i)
+        counts.emplace_back(bf_table[i].name, bf_table[i].invocation_count);
     Stream *line = new_stream(8192);
     stream_printf(line, "{\"ts\":%lld,\"pid\":%ld,\"interval_seconds\":15,"
                         "\"mode\":\"cumulative\",\"unit\":\"calls\",\"counts\":{",
@@ -240,7 +244,9 @@ flush_builtin_counts_snapshot()
         }
         stream_printf(line, "\":%llu", (unsigned long long)bf_table[i].invocation_count);
     }
-    stream_add_string(line, "}}\n");
+    stream_add_char(line, '}');
+    append_count_changes(line, get_builtin_counts_snapshot_name(), counts);
+    stream_add_string(line, "}\n");
     write_builtin_counts_snapshot(reset_stream(line));
     free_stream(line);
 }
