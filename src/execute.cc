@@ -109,6 +109,7 @@ static std::atomic<uint64_t> trace_id_counter{1};
 static std::atomic<uint64_t> span_id_counter{1};
 static enum outcome trace_activation_outcome = OUTCOME_DONE;
 static enum error trace_activation_error = E_NONE;
+#ifdef ENABLE_VERB_COUNTS
 static std::mutex verb_invocation_counts_mutex;
 static std::unordered_map<std::string, uint64_t> verb_invocation_counts;
 
@@ -135,6 +136,8 @@ snapshot_verb_invocation_counts()
               });
     return snapshot;
 }
+
+#endif // ENABLE_VERB_COUNTS
 
 static bool
 trace_full_calls_enabled()
@@ -431,9 +434,22 @@ suspend_task(package p)
     for (i = 0; i <= top_activ_stack; i++)
         the_vm->activ_stack[i] = activ_stack[i];
 
+#ifdef ENABLE_BENCHMARK
+    benchmark_pause(benchmark_current);
+    the_vm->benchmark = benchmark_current;
+    benchmark_current = nullptr;
+#endif
     e = (*p.u.susp.proc) (the_vm, p.u.susp.data);
-    if (e != E_NONE)
+    if (e != E_NONE) {
+#ifdef ENABLE_BENCHMARK
+        benchmark_current = the_vm->benchmark;
+        the_vm->benchmark = nullptr;
+#endif
         free_vm(the_vm, 0);
+#ifdef ENABLE_BENCHMARK
+        benchmark_start(benchmark_current);
+#endif
+    }
     return e;
 }
 
@@ -812,6 +828,9 @@ push_activation(void)
 {
     if (top_activ_stack < max_stack_size - 1) {
         top_activ_stack++;
+#ifdef ENABLE_BENCHMARK
+        activ_stack[top_activ_stack].benchmark_scope = nullptr;
+#endif
         activ_stack[top_activ_stack].caller_vloc = NOTHING;
         activ_stack[top_activ_stack].caller_verbname = nullptr;
         activ_stack[top_activ_stack].trace_id = 0;
@@ -829,6 +848,10 @@ free_activation(activation * ap, char data_too)
 {
     Var *i;
 
+#ifdef ENABLE_BENCHMARK
+    benchmark_finish(ap->benchmark_scope);
+    ap->benchmark_scope = nullptr;
+#endif
     if (trace_full_calls_enabled() || ap->parent_span_id == 0)
         emit_verb_trace_event(ap, trace_activation_outcome, trace_activation_error);
 
@@ -848,7 +871,11 @@ free_activation(activation * ap, char data_too)
     free_program(ap->prog);
 
     if (data_too && ap->bi_func_pc && ap->bi_func_data)
+#ifdef ENABLE_BENCHMARK
+        free_bi_func_data(ap->bi_func_data, ap->bi_func_id);
+#else
         free_data(ap->bi_func_data);
+#endif
     /* else bi_func_state will be later freed by bi_function */
 }
 
@@ -943,7 +970,9 @@ call_verb2(Objid recv, const char *vname, Var _this, Var args, int do_pass, bool
     else if (!push_activation())
         return E_MAXREC;
 
+#ifdef ENABLE_VERB_COUNTS
     note_resolved_verb_invocation(recv, db_verb_names(h));
+#endif
 
     program = db_verb_program(h);
     RUN_ACTIV.prog = program_ref(program);
@@ -1199,6 +1228,9 @@ next_opcode:
         op = (Opcode)(*bv++);
 
         if (COUNT_TICK(op)) {
+#ifdef ENABLE_BENCHMARK
+            benchmark_tick();
+#endif
             if (--ticks_remaining <= 0) {
                 STORE_STATE_VARIABLES();
                 abort_task(ABORT_TICKS);
@@ -2526,8 +2558,12 @@ else if (obj.type == TYPE_##t1) {           \
             {
                 enum Extended_Opcode eop = (Extended_Opcode)(*bv);
                 bv++;
-                if (COUNT_EOP_TICK(eop))
+                if (COUNT_EOP_TICK(eop)) {
+#ifdef ENABLE_BENCHMARK
+                    benchmark_tick();
+#endif
                     ticks_remaining--;
+                }
                 switch (eop) {
                     case EOP_RANGESET:
                     {
@@ -3358,12 +3394,20 @@ run_interpreter(char raise, enum error e,
     Var total_cputime;
     total_cputime.type = TYPE_FLOAT;
 
+#ifdef ENABLE_BENCHMARK
+    benchmark_start(benchmark_current);
+#endif
     interpreter_is_running = 1;
     std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
     ret = run(raise, e, result);
     std::chrono::duration<double> elapsed = std::chrono::high_resolution_clock::now() - start;
     total_cputime.v.fnum = elapsed.count();
     interpreter_is_running = 0;
+#ifdef ENABLE_BENCHMARK
+    benchmark_pause(benchmark_current);
+    delete benchmark_current;
+    benchmark_current = nullptr;
+#endif
 
     args = handler_verb_args;
 
@@ -3483,6 +3527,10 @@ do_task(Program * prog, int which_vector, Var * result, int is_fg, int do_db_tra
        because in that case the forked statement is parsed as
        the main vector */
 
+#ifdef ENABLE_BENCHMARK
+    BenchmarkDispatch accounting_dispatch;
+    RUN_ACTIV.benchmark_scope = nullptr;
+#endif
     RUN_ACTIV.prog = program_ref(prog);
 
     root_activ_vector = which_vector;   /* main or which of the forked */
@@ -3504,6 +3552,9 @@ enum outcome
 resume_from_previous_vm(vm the_vm, Var v)
 {
     unsigned int i;
+#ifdef ENABLE_BENCHMARK
+    BenchmarkDispatch accounting_dispatch(the_vm->benchmark);
+#endif
 
     check_activ_stack_size(the_vm->max_stack_size);
     top_activ_stack = the_vm->top_activ_stack;
@@ -3511,6 +3562,9 @@ resume_from_previous_vm(vm the_vm, Var v)
     for (i = 0; i <= top_activ_stack; i++)
         activ_stack[i] = the_vm->activ_stack[i];
 
+#ifdef ENABLE_BENCHMARK
+    the_vm->benchmark = nullptr;
+#endif
     free_vm(the_vm, 0);
 
     if (v.type == TYPE_ERR)
@@ -3558,7 +3612,9 @@ do_server_program_task(Var _this, const char *verb, Var args, Var vloc,
             break;
     }
 
+#ifdef ENABLE_VERB_COUNTS
     note_resolved_verb_invocation(receiver, verbname);
+#endif
 
     check_activ_stack_size(current_max_stack_size());
     top_activ_stack = 0;
@@ -3602,7 +3658,9 @@ do_input_task(Objid user, Parsed_Command * pc, Objid recv, db_verb_handle vh)
     Program *prog = db_verb_program(vh);
     Var *env;
 
+#ifdef ENABLE_VERB_COUNTS
     note_resolved_verb_invocation(recv, db_verb_names(vh));
+#endif
 
     check_activ_stack_size(current_max_stack_size());
     top_activ_stack = 0;
@@ -3704,10 +3762,67 @@ setup_activ_for_eval(Program * prog)
 
 /**** built in functions ****/
 
+#ifdef ENABLE_BENCHMARK
+static void benchmark_cleanup(void *data) {
+    benchmark_destroy_scope(static_cast<BenchmarkScope *>(data));
+}
+static void benchmark_write(void *) {
+    dbio_printf("benchmark_call continuation v1 incomplete\n");
+}
+static void *benchmark_read() {
+    if (strcmp(dbio_read_string(), "benchmark_call continuation v1 incomplete"))
+        return nullptr;
+    auto *s = new BenchmarkScope;
+    s->failure = "restart";
+    s->finished = true;
+    return s;
+}
+static package bf_benchmark_call(Var args, Byte next, void *data, Objid progr) {
+    if (next == 1) {
+        if (!is_wizard(progr)) { free_var(args); return make_error_pack(E_PERM); }
+        Var obj = args.v.list[1];
+        if (!obj.is_object()) { free_var(args); return make_error_pack(E_TYPE); }
+        uint64_t now;
+        if (!benchmark_clock(now)) { free_var(args); return make_error_pack(E_NACC); }
+        Var call_args = var_ref(args.v.list[3]);
+        error e = call_verb2(obj.type == TYPE_OBJ ? obj.v.obj : NOTHING,
+                            args.v.list[2].v.str, obj, call_args, 0, DEFAULT_THREAD_MODE);
+        free_var(args);
+        if (e != E_NONE) { free_var(call_args); return make_error_pack(e); }
+        auto *s = benchmark_begin();
+        RUN_ACTIV.benchmark_scope = s;
+        return make_call_pack(2, s);
+    }
+    auto *s = static_cast<BenchmarkScope *>(data);
+    benchmark_result_valid(s, uint64_t(INTNUM_MAX));
+    Var result = new_map();
+    result = mapinsert(result, str_dup_to_var("result"), args);
+    Var unavailable;
+    unavailable.type = TYPE_ERR;
+    unavailable.v.err = E_NACC;
+    result = mapinsert(result, str_dup_to_var("ticks"), s->failure ? unavailable : Var::new_int(s->ticks));
+    result = mapinsert(result, str_dup_to_var("cpu_seconds"), s->failure ? unavailable : Var::new_float(double(s->cpu) / 1e9));
+    result = mapinsert(result, str_dup_to_var("status"), str_dup_to_var(s->failure ? "incomplete" : "complete"));
+    result = mapinsert(result, str_dup_to_var("reason"), str_dup_to_var(s->failure ? s->failure : ""));
+    benchmark_cleanup(s);
+    return make_var_pack(result);
+}
+
+#endif // ENABLE_BENCHMARK
+
 struct cf_state {
     unsigned fnum;
     void *data;
 };
+
+#ifdef ENABLE_BENCHMARK
+static void cf_cleanup(void *data) {
+    auto *s = static_cast<cf_state *>(data);
+    free_bi_func_data(s->data, s->fnum);
+    free_data(s);
+}
+
+#endif // ENABLE_BENCHMARK
 
 static package
 bf_call_function(Var arglist, Byte next, void *vdata, Objid progr)
@@ -3769,6 +3884,7 @@ bf_call_function_read(void)
         else if (read_bi_func_data(s->fnum, &s->data, pc_for_bi_func_data()))
             return s;
     }
+    free_data(s);
     return nullptr;
 }
 
@@ -4047,10 +4163,17 @@ bf_task_stack(Var arglist, Byte next, void *vdata, Objid progr)
 void
 register_execute(void)
 {
-    register_function_with_read_write("call_function", 1, -1, bf_call_function,
+    unsigned cf = register_function_with_read_write("call_function", 1, -1, bf_call_function,
                                       bf_call_function_read,
                                       bf_call_function_write,
                                       TYPE_STR);
+#ifdef ENABLE_BENCHMARK
+    register_bi_func_cleanup(cf, cf_cleanup);
+    unsigned bench = register_function_with_read_write("benchmark_call", 3, 3,
+        bf_benchmark_call, benchmark_read, benchmark_write, TYPE_ANY, TYPE_STR, TYPE_LIST);
+    register_bi_func_cleanup(bench, benchmark_cleanup);
+#endif // ENABLE_BENCHMARK
+
     register_function("raise", 1, 3, bf_raise, TYPE_ANY, TYPE_STR, TYPE_ANY);
     register_function("suspend", 0, 1, bf_suspend, TYPE_NUMERIC);
     register_function("yin", 0, 3, bf_yield_if_needed, TYPE_NUMERIC, TYPE_INT, TYPE_INT);
@@ -4164,6 +4287,9 @@ read_activ_as_pi(activation * a)
     dbio_read_string();     /* was prepstr */
     a->verb = dbio_read_string_intern();
     a->verbname = dbio_read_string_intern();
+#ifdef ENABLE_BENCHMARK
+    a->benchmark_scope = nullptr;
+#endif
     a->trace_id = 0;
     a->span_id = 0;
     a->parent_span_id = 0;
@@ -4362,10 +4488,12 @@ read_activ(activation * a, int which_vector)
         errlog("READ_ACTIV: Bad PC for suspended task.\n");
         return 0;
     }
+    a->bi_func_data = nullptr;
     if (a->bi_func_pc != 0) {
         func_name = dbio_read_string();
         if ((i = number_func_by_name(func_name)) == FUNC_NOT_FOUND) {
             errlog("READ_ACTIV: Unknown built-in function `%s'\n", func_name);
+            free_activation(a, 0);
             return 0;
         }
         a->bi_func_id = i;
@@ -4373,6 +4501,7 @@ read_activ(activation * a, int which_vector)
                                &a->bi_func_pc)) {
             errlog("READ_ACTIV: Bad saved state for built-in function `%s'\n",
                    func_name);
+            free_activation(a, 0);
             return 0;
         }
     }

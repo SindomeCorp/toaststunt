@@ -24,12 +24,18 @@
 #include "parse_cmd.h"
 #include "program.h"
 #include "structures.h"
+#ifdef ENABLE_BENCHMARK
+#include "benchmark.h"
+#endif
 #include <chrono>
 #include <string>
 #include <utility>
 #include <vector>
 
 typedef struct {
+#ifdef ENABLE_BENCHMARK
+    BenchmarkScope *benchmark_scope; // non-owning; continuation owns it
+#endif
     Program *prog;
     Var *rt_env;		/* same length as prog.var_names */
     Var *base_rt_stack;
@@ -75,6 +81,9 @@ typedef struct {
 extern void free_activation(activation *, char data_too);
 
 typedef struct {
+#ifdef ENABLE_BENCHMARK
+    BenchmarkContext *benchmark; // runtime only, owned by this VM
+#endif
     int task_id;
     Var local;
     activation *activ_stack;
@@ -147,6 +156,8 @@ extern Var make_rt_var_map(Var * rt_env, const char **var_names, unsigned size);
 
 extern bool get_thread_mode();
 extern void set_thread_mode(bool mode);
+#ifdef ENABLE_VERB_COUNTS
 extern std::vector<std::pair<std::string, uint64_t>> snapshot_verb_invocation_counts();
+#endif
 
 #endif

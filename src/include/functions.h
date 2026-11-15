@@ -93,6 +93,15 @@ extern unsigned register_function_with_read_write(const char *, int, int,
 extern package call_bi_func(unsigned, Var, Byte, Objid, void *);
 /* will free or use Var arglist */
 
+#ifdef ENABLE_BENCHMARK
+extern void register_bi_func_cleanup(unsigned, void (*)(void *));
+extern void free_bi_func_data(void *, unsigned);
+#endif // ENABLE_BENCHMARK
+
+#ifdef ENABLE_BUILTIN_COUNTS
+extern void flush_builtin_counts_snapshot();
+#endif
+
 extern void write_bi_func_data(void *vdata, Byte f_id);
 extern int read_bi_func_data(Byte f_id, void **bi_func_state,
 			     Byte * bi_func_pc);

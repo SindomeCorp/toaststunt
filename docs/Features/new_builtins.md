@@ -27,3 +27,8 @@
     - connection_info (show detailed information about a particular connection)
     - parse_ansi (parses color tags into their ANSI equivalents)
     - remove_ansi (strips ANSI tags from strings)
+
+### benchmark_call(obj, verb, args)
+
+Wizard-only cumulative VM ticks and active interpreter-thread CPU for a verb call.
+See [benchmark_call](benchmark_call.md) for result fields, suspension, and restart semantics.

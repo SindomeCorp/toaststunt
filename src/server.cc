@@ -111,7 +111,12 @@ static Checkpoint_Reason checkpoint_requested = CHKPT_OFF;
 static int checkpoint_finished = 0; /* 1 = failure, 2 = success */
 
 static bool reopen_logfile_requested = false;
+#ifdef ENABLE_BUILTIN_COUNTS
+static bool builtin_counts_flush_requested = false;
+#endif
+#ifdef ENABLE_VERB_COUNTS
 static bool verb_counts_flush_requested = false;
+#endif
 
 static void handle_user_defined_signal(int sig);
 
@@ -485,11 +490,28 @@ checkpoint_timer(Timer_ID id, Timer_Data data)
     checkpoint_requested = CHKPT_TIMER;
 }
 
+#ifdef ENABLE_VERB_COUNTS
 static void
 verb_counts_timer(Timer_ID id, Timer_Data data)
 {
     verb_counts_flush_requested = true;
 }
+
+#endif // ENABLE_VERB_COUNTS
+
+#ifdef ENABLE_BUILTIN_COUNTS
+static void
+builtin_counts_timer(Timer_ID, Timer_Data)
+{
+    builtin_counts_flush_requested = true;
+}
+
+static void
+set_builtin_counts_timer()
+{
+    set_timer(15, builtin_counts_timer, nullptr);
+}
+#endif
 
 static void
 set_checkpoint_timer(int first_time)
@@ -507,6 +529,7 @@ set_checkpoint_timer(int first_time)
     last_checkpoint_timer = set_timer(interval, checkpoint_timer, nullptr);
 }
 
+#ifdef ENABLE_VERB_COUNTS
 static void
 set_verb_counts_timer(int first_time)
 {
@@ -588,6 +611,8 @@ flush_verb_counts_log()
     verb_counts_log_emit(reset_stream(line));
     free_stream(line);
 }
+
+#endif // ENABLE_VERB_COUNTS
 
 static const char *
 object_name(Objid oid)
@@ -883,7 +908,12 @@ main_loop(void)
     /* Third, run #0:server_started() */
     run_server_task(-1, Var::new_obj(SYSTEM_OBJECT), "server_started", new_list(0), "", nullptr);
     set_checkpoint_timer(1);
+#ifdef ENABLE_BUILTIN_COUNTS
+    set_builtin_counts_timer();
+#endif
+#ifdef ENABLE_VERB_COUNTS
     set_verb_counts_timer(1);
+#endif
 
     /* Now, we enter the main server loop */
     while (!shutdown_triggered) {
@@ -917,14 +947,27 @@ main_loop(void)
                 }
             }
             reopen_trace_log_file();
+#ifdef ENABLE_VERB_COUNTS
             reopen_verb_counts_log_file();
+#endif
         }
 
+#ifdef ENABLE_VERB_COUNTS
         if (verb_counts_flush_requested) {
             verb_counts_flush_requested = false;
             flush_verb_counts_log();
             set_verb_counts_timer(0);
         }
+
+#endif // ENABLE_VERB_COUNTS
+
+#ifdef ENABLE_BUILTIN_COUNTS
+        if (builtin_counts_flush_requested) {
+            builtin_counts_flush_requested = false;
+            flush_builtin_counts_snapshot();
+            set_builtin_counts_timer();
+        }
+#endif
 
         if (checkpoint_requested != CHKPT_OFF) {
             if (checkpoint_requested == CHKPT_SIGNAL)
@@ -2264,16 +2307,23 @@ main(int argc, char **argv)
         set_log_file(stderr);
     }
 
+#ifdef ENABLE_BUILTIN_COUNTS
+    set_builtin_counts_snapshot_name(log_file ? log_file : "toaststunt.log");
+#endif
+
     if (!set_trace_log_file_name(log_file ? log_file : "toaststunt.log")
             || !open_trace_log_file()) {
         perror("Error opening trace log file");
         exit(1);
     }
+#ifdef ENABLE_VERB_COUNTS
     if (!set_verb_counts_log_file_name(log_file ? log_file : "toaststunt.log")
             || !open_verb_counts_log_file()) {
         perror("Error opening verb counts log file");
         exit(1);
     }
+
+#endif // ENABLE_VERB_COUNTS
 
     if ((emergency && (script_file || script_line))
             || !db_initialize(&argc, &argv)
@@ -2476,7 +2526,9 @@ main(int argc, char **argv)
     curl_shutdown();
     pcre_shutdown();
     close_trace_log_file();
+#ifdef ENABLE_VERB_COUNTS
     close_verb_counts_log_file();
+#endif
 
     free_str(this_program);
 

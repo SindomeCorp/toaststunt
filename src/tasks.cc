@@ -1283,6 +1283,9 @@ enqueue_forked_task2(activation a, int f_index, double after_seconds, int vid)
     a.verbname = str_ref(a.verbname);
     a.caller_verbname = a.caller_verbname ? str_ref(a.caller_verbname) : str_dup("");
     a.prog = program_ref(a.prog);
+#ifdef ENABLE_BENCHMARK
+    a.benchmark_scope = nullptr;
+#endif
     a.threaded = DEFAULT_THREAD_MODE;
     if (vid >= 0) {
         free_var(a.rt_env[vid]);

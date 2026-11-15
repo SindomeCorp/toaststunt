@@ -17,6 +17,13 @@
 
 #include <stdarg.h>
 
+#include "config.h"
+#ifdef ENABLE_BUILTIN_COUNTS
+#include <cstdint>
+#include <ctime>
+#include <unistd.h>
+#endif
+
 #include "bf_register.h"
 #include "config.h"
 #include "db_io.h"
@@ -100,6 +107,12 @@ struct bft_entry {
     bf_type func;
     bf_read_type read;
     bf_write_type write;
+#ifdef ENABLE_BENCHMARK
+    void (*cleanup)(void *);
+#endif
+#ifdef ENABLE_BUILTIN_COUNTS
+    uint64_t invocation_count; // Interpreter-thread only; saturates rather than wraps.
+#endif
     int _protected;
 };
 
@@ -171,6 +184,18 @@ register_function_with_read_write(const char *name, int minargs, int maxargs,
     return ans;
 }
 
+#ifdef ENABLE_BENCHMARK
+void register_bi_func_cleanup(unsigned id, void (*cleanup)(void *)) {
+    if (id < top_bf_table) bf_table[id].cleanup = cleanup;
+}
+void free_bi_func_data(void *data, unsigned id) {
+    if (!data) return;
+    if (id < top_bf_table && bf_table[id].cleanup) bf_table[id].cleanup(data);
+    else free_data(data);
+}
+
+#endif // ENABLE_BENCHMARK
+
 /*** looking up functions -- by name or num ***/
 
 static const char *func_not_found_msg = "no such function";
@@ -196,6 +221,31 @@ number_func_by_name(const char *name)
     return FUNC_NOT_FOUND;
 }
 
+#ifdef ENABLE_BUILTIN_COUNTS
+void
+flush_builtin_counts_snapshot()
+{
+    Stream *line = new_stream(8192);
+    stream_printf(line, "{\"ts\":%lld,\"pid\":%ld,\"interval_seconds\":15,"
+                        "\"mode\":\"cumulative\",\"unit\":\"calls\",\"counts\":{",
+                  (long long)time(nullptr), (long)getpid());
+    for (unsigned i = 0; i < top_bf_table; ++i) {
+        if (i) stream_add_char(line, ',');
+        stream_add_char(line, '"');
+        // Registered names are normally identifiers; escape defensively.
+        for (const unsigned char *p = (const unsigned char *)bf_table[i].name; *p; ++p) {
+            if (*p == '"' || *p == '\\') stream_add_char(line, '\\');
+            if (*p < 0x20) stream_printf(line, "\\u%04x", *p);
+            else stream_add_char(line, *p);
+        }
+        stream_printf(line, "\":%llu", (unsigned long long)bf_table[i].invocation_count);
+    }
+    stream_add_string(line, "}}\n");
+    write_builtin_counts_snapshot(reset_stream(line));
+    free_stream(line);
+}
+#endif
+
 /*** calling built-in functions ***/
 
 package
@@ -218,6 +268,10 @@ call_bi_func(unsigned n, Var arglist, Byte func_pc,
         error_msg = new_stream(20);
 
     if (func_pc == 1) {     /* check arg types and count *ONLY* for first entry */
+#ifdef ENABLE_BUILTIN_COUNTS
+        if (f->invocation_count != UINT64_MAX)
+            ++f->invocation_count;
+#endif
         int k, max;
         Var *args = arglist.v.list;
 

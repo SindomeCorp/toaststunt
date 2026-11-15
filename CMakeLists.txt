@@ -6,6 +6,9 @@ set(VERSION_EXT "_37")
 project(ToastStunt VERSION ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_RELEASE} LANGUAGES CXX C)
 
 # Compile Options
+option(ENABLE_BUILTIN_COUNTS "Compile builtin invocation counts and replacing snapshots." OFF)
+option(ENABLE_VERB_COUNTS "Compile cumulative verb invocation counts and logging." OFF)
+option(ENABLE_BENCHMARK "Compile benchmark_call and interpreter accounting." OFF)
 option(ONLY_32_BITS "Use 32-bit integers instead of 64-bit." OFF)
 option(USE_JEMALLOC "Use jemalloc (if available) for memory allocation." OFF)
 
@@ -282,6 +285,9 @@ set(src_SERVER
     ${src_CXXSRCS})
 
 add_executable(moo ${src_SERVER})
+if(ENABLE_BENCHMARK)
+    target_sources(moo PRIVATE src/benchmark.cc)
+endif()
 
 # Make sure we have the packages we need
 include_directories(${NETTLE_INCLUDE_DIR})

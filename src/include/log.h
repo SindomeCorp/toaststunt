@@ -30,12 +30,20 @@ int open_trace_log_file();
 void close_trace_log_file();
 void reopen_trace_log_file();
 void trace_log_emit(const char *line);
+#ifdef ENABLE_VERB_COUNTS
 extern int set_verb_counts_log_file_name(const char *name);
 const char* get_verb_counts_log_file_name();
 int open_verb_counts_log_file();
 void close_verb_counts_log_file();
 void reopen_verb_counts_log_file();
 void verb_counts_log_emit(const char *line);
+
+#endif // ENABLE_VERB_COUNTS
+
+#ifdef ENABLE_BUILTIN_COUNTS
+void set_builtin_counts_snapshot_name(const char *base);
+void write_builtin_counts_snapshot(const char *line);
+#endif
 
 enum {LOG_NONE, LOG_INFO1, LOG_INFO2, LOG_INFO3, LOG_INFO4,
       LOG_NOTICE, LOG_WARNING, LOG_ERROR};

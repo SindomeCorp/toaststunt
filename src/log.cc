@@ -23,6 +23,12 @@
 #include <unistd.h>
 #include <stdlib.h>
 
+#include "config.h"
+#ifdef ENABLE_BUILTIN_COUNTS
+#include <fcntl.h>
+#include <string>
+#endif
+
 #include "bf_register.h"
 #include "config.h"
 #include "functions.h"
@@ -36,8 +42,10 @@ static FILE *log_file = nullptr;
 static const char *log_file_name = nullptr;
 static FILE *trace_log_file = nullptr;
 static const char *trace_log_file_name = nullptr;
+#ifdef ENABLE_VERB_COUNTS
 static FILE *verb_counts_log_file = nullptr;
 static const char *verb_counts_log_file_name = nullptr;
+#endif
 
 void
 set_log_file(FILE * f)
@@ -128,6 +136,7 @@ trace_log_emit(const char *line)
     fflush(trace_log_file);
 }
 
+#ifdef ENABLE_VERB_COUNTS
 int
 set_verb_counts_log_file_name(const char *name)
 {
@@ -192,6 +201,46 @@ verb_counts_log_emit(const char *line)
     fputc('\n', verb_counts_log_file);
     fflush(verb_counts_log_file);
 }
+
+#endif // ENABLE_VERB_COUNTS
+
+#ifdef ENABLE_BUILTIN_COUNTS
+static std::string builtin_counts_snapshot_name;
+
+void
+set_builtin_counts_snapshot_name(const char *base)
+{
+    builtin_counts_snapshot_name = std::string(base) + ".builtin_counts";
+}
+
+void
+write_builtin_counts_snapshot(const char *line)
+{
+    // One reusable temporary sibling: readers see the old or new complete file.
+    const std::string temporary = builtin_counts_snapshot_name + ".tmp";
+    int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        log_perror("BUILTIN_COUNTS: opening snapshot temporary file");
+        return;
+    }
+    FILE *file = fdopen(fd, "w");
+    int failure = 0;
+    if (!file) {
+        failure = errno;
+        close(fd);
+    } else {
+        if (fputs(line, file) == EOF) failure = errno ? errno : EIO;
+        if (fclose(file) != 0 && !failure) failure = errno ? errno : EIO;
+    }
+    if (!failure && rename(temporary.c_str(), builtin_counts_snapshot_name.c_str()) != 0)
+        failure = errno;
+    if (failure) {
+        unlink(temporary.c_str());
+        errno = failure;
+        log_perror("BUILTIN_COUNTS: replacing snapshot");
+    }
+}
+#endif
 
 static void
 do_log(const int severity, const char *fmt, va_list args)

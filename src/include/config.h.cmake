@@ -1,3 +1,7 @@
+#cmakedefine ENABLE_BUILTIN_COUNTS
+#cmakedefine ENABLE_VERB_COUNTS
+#cmakedefine ENABLE_BENCHMARK
+
 #cmakedefine ONLY_32_BITS @ONLY_32_BITS@
 
 #ifdef ONLY_32_BITS

@@ -35,6 +35,9 @@ new_vm(int task_id, Var local, int stack_size)
 {
     vm the_vm = (vm)mymalloc(sizeof(vmstruct), M_VM);
 
+#ifdef ENABLE_BENCHMARK
+    the_vm->benchmark = nullptr;
+#endif
     the_vm->task_id = task_id;
     the_vm->local = local;
     the_vm->activ_stack = (activation *)mymalloc(sizeof(activation) * stack_size, M_VM);
@@ -52,6 +55,9 @@ free_vm(vm the_vm, int stack_too)
     if (stack_too)
         for (i = the_vm->top_activ_stack; i >= 0; i--)
             free_activation(&the_vm->activ_stack[i], 1);
+#ifdef ENABLE_BENCHMARK
+    delete the_vm->benchmark;
+#endif
     myfree(the_vm->activ_stack, M_VM);
     myfree(the_vm, M_VM);
 }
@@ -129,6 +135,10 @@ read_vm(int task_id)
         if (!read_activ(&the_vm->activ_stack[i],
                         i == 0 ? vector : MAIN_VECTOR)) {
             errlog("READ_VM: Bad activ number %d\n", i);
+            // Earlier frames may own nested built-in continuation state.
+            for (unsigned j = 0; j < i; ++j)
+                free_activation(&the_vm->activ_stack[j], 1);
+            free_vm(the_vm, 0);
             return nullptr;
         }
     return the_vm;
