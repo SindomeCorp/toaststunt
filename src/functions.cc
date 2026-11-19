@@ -18,8 +18,10 @@
 #include <stdarg.h>
 
 #include "config.h"
-#ifdef ENABLE_BUILTIN_COUNTS
-#include <cstdint>
+#if defined(ENABLE_VERB_COUNTS) || defined(ENABLE_BUILTIN_COUNTS)
+#include <string>
+#endif
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 #include "count_changes.h"
 #include <ctime>
 #include <unistd.h>
@@ -222,7 +224,36 @@ number_func_by_name(const char *name)
     return FUNC_NOT_FOUND;
 }
 
+#if defined(ENABLE_VERB_COUNTS) || defined(ENABLE_BUILTIN_COUNTS)
+Var
+invocation_count_value(uint64_t count)
+{
+    if (count <= static_cast<uint64_t>(MAXINT))
+        return Var::new_int(static_cast<Num>(count));
+
+    return str_dup_to_var(std::to_string(count).c_str());
+}
+#endif
+
 #ifdef ENABLE_BUILTIN_COUNTS
+static package
+bf_builtin_call_counts(Var arglist, Byte next, void *vdata, Objid progr)
+{
+    free_var(arglist);
+    if (!is_wizard(progr))
+        return make_error_pack(E_PERM);
+
+    Var counts = new_map();
+    for (unsigned i = 0; i < top_bf_table; ++i)
+        counts = mapinsert(counts, str_dup_to_var(bf_table[i].name),
+                           invocation_count_value(bf_table[i].invocation_count));
+    return make_var_pack(counts);
+}
+#endif
+
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
+static uint64_t builtin_counts_generation = 0;
+
 void
 flush_builtin_counts_snapshot()
 {
@@ -245,10 +276,28 @@ flush_builtin_counts_snapshot()
         stream_printf(line, "\":%llu", (unsigned long long)bf_table[i].invocation_count);
     }
     stream_add_char(line, '}');
-    append_count_changes(line, get_builtin_counts_snapshot_name(), counts);
+    append_count_changes(line, get_builtin_counts_snapshot_name(), counts, builtin_counts_generation);
     stream_add_string(line, "}\n");
     write_builtin_counts_snapshot(reset_stream(line));
     free_stream(line);
+}
+#endif
+
+#ifdef ENABLE_BUILTIN_COUNTS
+static package
+bf_clear_builtin_count(Var arglist, Byte next, void *vdata, Objid progr)
+{
+    free_var(arglist);
+    if (!is_wizard(progr))
+        return make_error_pack(E_PERM);
+
+    for (unsigned i = 0; i < top_bf_table; ++i)
+        bf_table[i].invocation_count = 0;
+#ifdef ENABLE_DIAGNOSTIC_LOGS
+    ++builtin_counts_generation;
+    flush_builtin_counts_snapshot();
+#endif
+    return no_var_pack();
 }
 #endif
 
@@ -628,4 +677,8 @@ register_functions(void)
 {
     register_function("function_info", 0, 1, bf_function_info, TYPE_STR);
     register_function("load_server_options", 0, 0, bf_load_server_options);
+#ifdef ENABLE_BUILTIN_COUNTS
+    register_function("builtin_call_counts", 0, 0, bf_builtin_call_counts);
+    register_function("clear_builtin_count", 0, 0, bf_clear_builtin_count);
+#endif
 }

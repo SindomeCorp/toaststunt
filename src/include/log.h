@@ -24,13 +24,15 @@ extern void set_log_file(FILE *);
 FILE* get_log_file();
 extern void set_log_file_name(const char *name);
 const char* get_log_file_name();
+#if defined(ENABLE_DIAGNOSTIC_LOGS)
 extern int set_trace_log_file_name(const char *name);
 const char* get_trace_log_file_name();
 int open_trace_log_file();
 void close_trace_log_file();
 void reopen_trace_log_file();
 void trace_log_emit(const char *line);
-#ifdef ENABLE_VERB_COUNTS
+#endif
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 extern int set_verb_counts_log_file_name(const char *name);
 const char* get_verb_counts_log_file_name();
 int open_verb_counts_log_file();
@@ -40,7 +42,7 @@ void verb_counts_log_emit(const char *line);
 
 #endif // ENABLE_VERB_COUNTS
 
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 const char *get_builtin_counts_snapshot_name();
 void set_builtin_counts_snapshot_name(const char *base);
 void write_builtin_counts_snapshot(const char *line);

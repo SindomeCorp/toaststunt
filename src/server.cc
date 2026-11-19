@@ -47,7 +47,7 @@
 #include <netinet/in.h>
 
 #include "config.h"
-#ifdef ENABLE_VERB_COUNTS
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 #include "count_changes.h"
 #endif
 #include "db.h"
@@ -114,10 +114,10 @@ static Checkpoint_Reason checkpoint_requested = CHKPT_OFF;
 static int checkpoint_finished = 0; /* 1 = failure, 2 = success */
 
 static bool reopen_logfile_requested = false;
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 static bool builtin_counts_flush_requested = false;
 #endif
-#ifdef ENABLE_VERB_COUNTS
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 static bool verb_counts_flush_requested = false;
 #endif
 
@@ -378,7 +378,11 @@ shutdown_signal(int sig)
 static void
 logfile_signal()
 {
+#ifdef ENABLE_DIAGNOSTIC_LOGS
     if (get_log_file() || get_trace_log_file_name())
+#else
+    if (get_log_file())
+#endif
         reopen_logfile_requested = true;
 }
 
@@ -493,7 +497,7 @@ checkpoint_timer(Timer_ID id, Timer_Data data)
     checkpoint_requested = CHKPT_TIMER;
 }
 
-#ifdef ENABLE_VERB_COUNTS
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 static void
 verb_counts_timer(Timer_ID id, Timer_Data data)
 {
@@ -502,7 +506,7 @@ verb_counts_timer(Timer_ID id, Timer_Data data)
 
 #endif // ENABLE_VERB_COUNTS
 
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 static void
 builtin_counts_timer(Timer_ID, Timer_Data)
 {
@@ -532,7 +536,7 @@ set_checkpoint_timer(int first_time)
     last_checkpoint_timer = set_timer(interval, checkpoint_timer, nullptr);
 }
 
-#ifdef ENABLE_VERB_COUNTS
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 static void
 set_verb_counts_timer(int first_time)
 {
@@ -587,17 +591,7 @@ static uint64_t verb_counts_generation = 0;
 static void
 flush_verb_counts_log()
 {
-    std::vector<std::pair<std::string, uint64_t>> snapshot = snapshot_verb_invocation_counts();
-    const size_t max_entries = 50;
-
-    std::sort(snapshot.begin(), snapshot.end(),
-              [](const auto &a, const auto &b) {
-                  if (a.second != b.second)
-                      return a.second > b.second;
-                  return a.first < b.first;
-              });
-    if (snapshot.size() > max_entries)
-        snapshot.resize(max_entries);
+    const auto snapshot = snapshot_verb_invocation_counts(DEFAULT_VERB_COUNT_LIMIT);
 
     Stream *line = new_stream(512 + snapshot.size() * 32);
     time_t now = time(nullptr);
@@ -619,6 +613,31 @@ flush_verb_counts_log()
     free_stream(line);
 }
 
+#endif
+
+#ifdef ENABLE_VERB_COUNTS
+static package
+bf_verb_call_counts(Var arglist, Byte next, void *vdata, Objid progr)
+{
+    const Num limit = listlength(arglist) ? arglist.v.list[1].v.num : DEFAULT_VERB_COUNT_LIMIT;
+    free_var(arglist);
+    if (!is_wizard(progr))
+        return make_error_pack(E_PERM);
+    if (limit < 0)
+        return make_error_pack(E_INVARG);
+
+    const auto snapshot = snapshot_verb_invocation_counts(limit);
+    Var counts = new_list(snapshot.size());
+    for (size_t i = 0; i < snapshot.size(); ++i) {
+        const auto &entry = snapshot[i];
+        Var row = new_list(2);
+        row.v.list[1] = str_dup_to_var(entry.first.c_str());
+        row.v.list[2] = invocation_count_value(entry.second);
+        counts.v.list[i + 1] = row;
+    }
+    return make_var_pack(counts);
+}
+
 static package
 bf_clear_verb_counts(Var arglist, Byte next, void *vdata, Objid progr)
 {
@@ -627,10 +646,12 @@ bf_clear_verb_counts(Var arglist, Byte next, void *vdata, Objid progr)
         return make_error_pack(E_PERM);
 
     clear_verb_invocation_counts();
+#ifdef ENABLE_DIAGNOSTIC_LOGS
     ++verb_counts_generation;
     /* Publish the reset immediately instead of leaving the previous totals
        as the latest snapshot until the next timer tick. */
     flush_verb_counts_log();
+#endif
     return no_var_pack();
 }
 
@@ -930,10 +951,10 @@ main_loop(void)
     /* Third, run #0:server_started() */
     run_server_task(-1, Var::new_obj(SYSTEM_OBJECT), "server_started", new_list(0), "", nullptr);
     set_checkpoint_timer(1);
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
     set_builtin_counts_timer();
 #endif
-#ifdef ENABLE_VERB_COUNTS
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
     set_verb_counts_timer(1);
 #endif
 
@@ -968,13 +989,15 @@ main_loop(void)
                     log_perror("Error reopening log file");
                 }
             }
+#if defined(ENABLE_DIAGNOSTIC_LOGS)
             reopen_trace_log_file();
-#ifdef ENABLE_VERB_COUNTS
+#endif
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
             reopen_verb_counts_log_file();
 #endif
         }
 
-#ifdef ENABLE_VERB_COUNTS
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
         if (verb_counts_flush_requested) {
             verb_counts_flush_requested = false;
             flush_verb_counts_log();
@@ -983,7 +1006,7 @@ main_loop(void)
 
 #endif // ENABLE_VERB_COUNTS
 
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
         if (builtin_counts_flush_requested) {
             builtin_counts_flush_requested = false;
             flush_builtin_counts_snapshot();
@@ -2329,16 +2352,18 @@ main(int argc, char **argv)
         set_log_file(stderr);
     }
 
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
     set_builtin_counts_snapshot_name(log_file ? log_file : "toaststunt.log");
 #endif
 
+#if defined(ENABLE_DIAGNOSTIC_LOGS)
     if (!set_trace_log_file_name(log_file ? log_file : "toaststunt.log")
             || !open_trace_log_file()) {
         perror("Error opening trace log file");
         exit(1);
     }
-#ifdef ENABLE_VERB_COUNTS
+#endif
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
     if (!set_verb_counts_log_file_name(log_file ? log_file : "toaststunt.log")
             || !open_verb_counts_log_file()) {
         perror("Error opening verb counts log file");
@@ -2547,8 +2572,10 @@ main(int argc, char **argv)
     sql_shutdown();
     curl_shutdown();
     pcre_shutdown();
+#if defined(ENABLE_DIAGNOSTIC_LOGS)
     close_trace_log_file();
-#ifdef ENABLE_VERB_COUNTS
+#endif
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
     close_verb_counts_log_file();
 #endif
 
@@ -3462,6 +3489,7 @@ register_server(void)
 {
 #ifdef ENABLE_VERB_COUNTS
     register_function("clear_verb_counts", 0, 0, bf_clear_verb_counts);
+    register_function("verb_call_counts", 0, 1, bf_verb_call_counts, TYPE_INT);
 #endif
     register_function("server_version", 0, 1, bf_server_version, TYPE_ANY);
     register_function("renumber", 1, 1, bf_renumber, TYPE_OBJ);

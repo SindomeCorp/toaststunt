@@ -105,10 +105,12 @@ static Var not_available;
 static char* type_mismatch_string(int n_args, ...);
 static Var type_mismatch_value(int n_args, ...);
 
+#ifdef ENABLE_DIAGNOSTIC_LOGS
 static std::atomic<uint64_t> trace_id_counter{1};
 static std::atomic<uint64_t> span_id_counter{1};
 static enum outcome trace_activation_outcome = OUTCOME_DONE;
 static enum error trace_activation_error = E_NONE;
+#endif
 #ifdef ENABLE_VERB_COUNTS
 static std::mutex verb_invocation_counts_mutex;
 static std::unordered_map<std::string, uint64_t> verb_invocation_counts;
@@ -118,22 +120,27 @@ note_resolved_verb_invocation(Objid recv, const char *verbname)
 {
     std::string key = "#" + std::to_string((long long)recv) + ":" + (verbname ? verbname : "");
     std::lock_guard<std::mutex> lock(verb_invocation_counts_mutex);
-    verb_invocation_counts[key] += 1;
+    auto &count = verb_invocation_counts[key];
+    if (count != UINT64_MAX)
+        ++count;
 }
 
 std::vector<std::pair<std::string, uint64_t>>
-snapshot_verb_invocation_counts()
+snapshot_verb_invocation_counts(uint64_t limit)
 {
-    std::lock_guard<std::mutex> lock(verb_invocation_counts_mutex);
-    std::vector<std::pair<std::string, uint64_t>> snapshot;
-    snapshot.reserve(verb_invocation_counts.size());
-    for (const auto &entry: verb_invocation_counts)
-        snapshot.emplace_back(entry.first, entry.second);
+    if (limit == 0)
+        return {};
 
-    std::sort(snapshot.begin(), snapshot.end(),
-              [](const auto &a, const auto &b) {
-                  return a.first < b.first;
-              });
+    std::lock_guard<std::mutex> lock(verb_invocation_counts_mutex);
+    const auto size = std::min<uint64_t>(limit, verb_invocation_counts.size());
+    std::vector<std::pair<std::string, uint64_t>> snapshot(size);
+    std::partial_sort_copy(verb_invocation_counts.begin(), verb_invocation_counts.end(),
+                           snapshot.begin(), snapshot.end(),
+                           [](const auto &a, const auto &b) {
+                               if (a.second != b.second)
+                                   return a.second > b.second;
+                               return a.first < b.first;
+                           });
     return snapshot;
 }
 
@@ -146,6 +153,7 @@ clear_verb_invocation_counts()
 
 #endif // ENABLE_VERB_COUNTS
 
+#ifdef ENABLE_DIAGNOSTIC_LOGS
 static bool
 trace_full_calls_enabled()
 {
@@ -307,6 +315,7 @@ emit_verb_trace_event(const activation *a, enum outcome outcome, enum error rais
     free_stream(line);
 }
 
+#endif
 /* macros to ease indexing into activation stack */
 #define RUN_ACTIV     activ_stack[top_activ_stack]
 #define CALLER_ACTIV  activ_stack[top_activ_stack - 1]
@@ -475,10 +484,12 @@ unwind_stack(Finally_Reason why, Var value, enum outcome *outcome)
      * why==FIN_ABORT always returns true/OUTCOME_ABORTED
      */
     Var code = (why == FIN_RAISE ? value.v.list[1] : zero);
+#ifdef ENABLE_DIAGNOSTIC_LOGS
     trace_activation_outcome =
         (why == FIN_ABORT || why == FIN_UNCAUGHT || why == FIN_RAISE)
             ? OUTCOME_ABORTED : OUTCOME_DONE;
     trace_activation_error = (why == FIN_RAISE && code.type == TYPE_ERR) ? code.v.err : E_NONE;
+#endif
 
     for (;;) {          /* loop over activations */
         activation *a = &(activ_stack[top_activ_stack]);
@@ -838,6 +849,7 @@ push_activation(void)
 #ifdef ENABLE_BENCHMARK
         activ_stack[top_activ_stack].benchmark_scope = nullptr;
 #endif
+#ifdef ENABLE_DIAGNOSTIC_LOGS
         activ_stack[top_activ_stack].caller_vloc = NOTHING;
         activ_stack[top_activ_stack].caller_verbname = nullptr;
         activ_stack[top_activ_stack].trace_id = 0;
@@ -845,6 +857,7 @@ push_activation(void)
         activ_stack[top_activ_stack].parent_span_id = 0;
         activ_stack[top_activ_stack].trace_task_id = -1;
         activ_stack[top_activ_stack].trace_start_time = std::chrono::high_resolution_clock::now();
+#endif
         return 1;
     } else
         return 0;
@@ -859,8 +872,10 @@ free_activation(activation * ap, char data_too)
     benchmark_finish(ap->benchmark_scope);
     ap->benchmark_scope = nullptr;
 #endif
+#ifdef ENABLE_DIAGNOSTIC_LOGS
     if (trace_full_calls_enabled() || ap->parent_span_id == 0)
         emit_verb_trace_event(ap, trace_activation_outcome, trace_activation_error);
+#endif
 
     free_rt_env(ap->rt_env, ap->prog->num_var_names);
 
@@ -872,8 +887,10 @@ free_activation(activation * ap, char data_too)
     free_var(ap->vloc);
     free_str(ap->verb);
     free_str(ap->verbname);
-        if (ap->caller_verbname)
+#ifdef ENABLE_DIAGNOSTIC_LOGS
+    if (ap->caller_verbname)
         free_str(ap->caller_verbname);
+#endif
 
     free_program(ap->prog);
 
@@ -989,15 +1006,17 @@ call_verb2(Objid recv, const char *vname, Var _this, Var args, int do_pass, bool
     RUN_ACTIV.vloc = var_ref(db_verb_definer(h));
     RUN_ACTIV.verb = str_ref(vname);
     RUN_ACTIV.verbname = str_ref(db_verb_names(h));
-    RUN_ACTIV.caller_vloc = TYPE_OBJ == CALLER_ACTIV.vloc.type ? CALLER_ACTIV.vloc.v.obj : NOTHING;
-    RUN_ACTIV.caller_verbname = str_ref(CALLER_ACTIV.verbname);
     RUN_ACTIV.debug = (db_verb_flags(h) & VF_DEBUG);
     RUN_ACTIV.threaded = should_thread;
+#ifdef ENABLE_DIAGNOSTIC_LOGS
+    RUN_ACTIV.caller_vloc = TYPE_OBJ == CALLER_ACTIV.vloc.type ? CALLER_ACTIV.vloc.v.obj : NOTHING;
+    RUN_ACTIV.caller_verbname = str_ref(CALLER_ACTIV.verbname);
     RUN_ACTIV.trace_id = CALLER_ACTIV.trace_id;
     RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
     RUN_ACTIV.parent_span_id = CALLER_ACTIV.span_id;
     RUN_ACTIV.trace_task_id = current_task_id;
     RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
+#endif
 
     alloc_rt_stack(&RUN_ACTIV, program->main_vector.max_stack);
     RUN_ACTIV.pc = 0;
@@ -3372,6 +3391,7 @@ run_interpreter(char raise, enum error e,
     handler_verb_args = zero;
     handler_verb_name = nullptr;
 
+#ifdef ENABLE_DIAGNOSTIC_LOGS
     if (RUN_ACTIV.trace_id == 0)
         RUN_ACTIV.trace_id = trace_id_counter.fetch_add(1);
     if (RUN_ACTIV.span_id == 0)
@@ -3380,6 +3400,7 @@ run_interpreter(char raise, enum error e,
         RUN_ACTIV.caller_verbname = str_dup("");
     RUN_ACTIV.trace_task_id = current_task_id;
     RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
+#endif
 
     Objid object = RUN_ACTIV.vloc.v.obj;
     Objid progr = RUN_ACTIV.progr;
@@ -3634,15 +3655,17 @@ do_server_program_task(Var _this, const char *verb, Var args, Var vloc,
     RUN_ACTIV.vloc = var_ref(vloc);
     RUN_ACTIV.verb = str_dup(verb);
     RUN_ACTIV.verbname = str_dup(verbname);
-    RUN_ACTIV.caller_vloc = NOTHING;
-    RUN_ACTIV.caller_verbname = str_dup("");
     RUN_ACTIV.debug = debug;
     RUN_ACTIV.threaded = DEFAULT_THREAD_MODE;
+#ifdef ENABLE_DIAGNOSTIC_LOGS
+    RUN_ACTIV.caller_vloc = NOTHING;
+    RUN_ACTIV.caller_verbname = str_dup("");
     RUN_ACTIV.trace_id = trace_id_counter.fetch_add(1);
     RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
     RUN_ACTIV.parent_span_id = 0;
     RUN_ACTIV.trace_task_id = current_task_id;
     RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
+#endif
     fill_in_rt_consts(env, program->version);
     set_rt_env_obj(env, SLOT_PLAYER, player);
     set_rt_env_obj(env, SLOT_CALLER, -1);
@@ -3680,15 +3703,17 @@ do_input_task(Objid user, Parsed_Command * pc, Objid recv, db_verb_handle vh)
     RUN_ACTIV.vloc = var_ref(db_verb_definer(vh));
     RUN_ACTIV.verb = str_ref(pc->verb);
     RUN_ACTIV.verbname = str_ref(db_verb_names(vh));
-    RUN_ACTIV.caller_vloc = NOTHING;
-    RUN_ACTIV.caller_verbname = str_dup("");
     RUN_ACTIV.debug = (db_verb_flags(vh) & VF_DEBUG);
     RUN_ACTIV.threaded = DEFAULT_THREAD_MODE;
+#ifdef ENABLE_DIAGNOSTIC_LOGS
+    RUN_ACTIV.caller_vloc = NOTHING;
+    RUN_ACTIV.caller_verbname = str_dup("");
     RUN_ACTIV.trace_id = trace_id_counter.fetch_add(1);
     RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
     RUN_ACTIV.parent_span_id = 0;
     RUN_ACTIV.trace_task_id = current_task_id;
     RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
+#endif
     fill_in_rt_consts(env, prog->version);
     set_rt_env_obj(env, SLOT_PLAYER, user);
     set_rt_env_obj(env, SLOT_CALLER, user);
@@ -3713,7 +3738,9 @@ do_forked_task(Program * prog, Var * rt_env, activation a, int f_id)
 
     RUN_ACTIV = a;
     RUN_ACTIV.rt_env = rt_env;
+#ifdef ENABLE_DIAGNOSTIC_LOGS
     RUN_ACTIV.trace_task_id = current_task_id;
+#endif
 
     return do_task(prog, f_id, nullptr, 0/*bg*/, 1/*traceback*/);
 }
@@ -3750,15 +3777,17 @@ setup_activ_for_eval(Program * prog)
     RUN_ACTIV.vloc = var_ref(nothing);
     RUN_ACTIV.verb = str_dup("");
     RUN_ACTIV.verbname = str_dup("Input to EVAL");
-    RUN_ACTIV.caller_vloc = TYPE_OBJ == CALLER_ACTIV.vloc.type ? CALLER_ACTIV.vloc.v.obj : NOTHING;
-    RUN_ACTIV.caller_verbname = str_ref(CALLER_ACTIV.verbname);
     RUN_ACTIV.debug = 1;
     RUN_ACTIV.threaded = DEFAULT_THREAD_MODE;
+#ifdef ENABLE_DIAGNOSTIC_LOGS
+    RUN_ACTIV.caller_vloc = TYPE_OBJ == CALLER_ACTIV.vloc.type ? CALLER_ACTIV.vloc.v.obj : NOTHING;
+    RUN_ACTIV.caller_verbname = str_ref(CALLER_ACTIV.verbname);
     RUN_ACTIV.trace_id = CALLER_ACTIV.trace_id;
     RUN_ACTIV.span_id = span_id_counter.fetch_add(1);
     RUN_ACTIV.parent_span_id = CALLER_ACTIV.span_id;
     RUN_ACTIV.trace_task_id = current_task_id;
     RUN_ACTIV.trace_start_time = std::chrono::high_resolution_clock::now();
+#endif
     alloc_rt_stack(&RUN_ACTIV, RUN_ACTIV.prog->main_vector.max_stack);
     RUN_ACTIV.pc = 0;
     RUN_ACTIV.error_pc = 0;
@@ -4297,6 +4326,7 @@ read_activ_as_pi(activation * a)
 #ifdef ENABLE_BENCHMARK
     a->benchmark_scope = nullptr;
 #endif
+#ifdef ENABLE_DIAGNOSTIC_LOGS
     a->trace_id = 0;
     a->span_id = 0;
     a->parent_span_id = 0;
@@ -4304,6 +4334,7 @@ read_activ_as_pi(activation * a)
     a->caller_vloc = NOTHING;
     a->caller_verbname = str_dup("");
     a->trace_start_time = std::chrono::high_resolution_clock::now();
+#endif
     return 1;
 }
 

@@ -1,6 +1,7 @@
 #cmakedefine ENABLE_BUILTIN_COUNTS
 #cmakedefine ENABLE_VERB_COUNTS
 #cmakedefine ENABLE_BENCHMARK
+#cmakedefine ENABLE_DIAGNOSTIC_LOGS
 
 #cmakedefine ONLY_32_BITS @ONLY_32_BITS@
 

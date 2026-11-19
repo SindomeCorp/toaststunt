@@ -24,7 +24,7 @@
 #include <stdlib.h>
 
 #include "config.h"
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 #include <fcntl.h>
 #include <string>
 #endif
@@ -40,9 +40,11 @@
 
 static FILE *log_file = nullptr;
 static const char *log_file_name = nullptr;
+#if defined(ENABLE_DIAGNOSTIC_LOGS)
 static FILE *trace_log_file = nullptr;
 static const char *trace_log_file_name = nullptr;
-#ifdef ENABLE_VERB_COUNTS
+#endif
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 static FILE *verb_counts_log_file = nullptr;
 static const char *verb_counts_log_file_name = nullptr;
 #endif
@@ -71,6 +73,7 @@ get_log_file_name()
     return log_file_name;
 }
 
+#if defined(ENABLE_DIAGNOSTIC_LOGS)
 int
 set_trace_log_file_name(const char *name)
 {
@@ -136,7 +139,8 @@ trace_log_emit(const char *line)
     fflush(trace_log_file);
 }
 
-#ifdef ENABLE_VERB_COUNTS
+#endif
+#if defined(ENABLE_VERB_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 int
 set_verb_counts_log_file_name(const char *name)
 {
@@ -204,7 +208,7 @@ verb_counts_log_emit(const char *line)
 
 #endif // ENABLE_VERB_COUNTS
 
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 static std::string builtin_counts_snapshot_name;
 
 const char *

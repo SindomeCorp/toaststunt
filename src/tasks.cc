@@ -617,8 +617,10 @@ free_task(task * t, int strong)
                     free_var(t->t.forked.a._this);
                 free_str(t->t.forked.a.verb);
                 free_str(t->t.forked.a.verbname);
+#ifdef ENABLE_DIAGNOSTIC_LOGS
                 if (t->t.forked.a.caller_verbname)
                     free_str(t->t.forked.a.caller_verbname);
+#endif
             }
             free_program(t->t.forked.program);
             break;
@@ -1281,7 +1283,9 @@ enqueue_forked_task2(activation a, int f_index, double after_seconds, int vid)
     a.vloc = var_ref(a.vloc);
     a.verb = str_ref(a.verb);
     a.verbname = str_ref(a.verbname);
+#ifdef ENABLE_DIAGNOSTIC_LOGS
     a.caller_verbname = a.caller_verbname ? str_ref(a.caller_verbname) : str_dup("");
+#endif
     a.prog = program_ref(a.prog);
 #ifdef ENABLE_BENCHMARK
     a.benchmark_scope = nullptr;

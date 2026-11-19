@@ -6,8 +6,9 @@ set(VERSION_EXT "_37")
 project(ToastStunt VERSION ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_RELEASE} LANGUAGES CXX C)
 
 # Compile Options
-option(ENABLE_BUILTIN_COUNTS "Compile builtin invocation counts and replacing snapshots." OFF)
-option(ENABLE_VERB_COUNTS "Compile cumulative verb invocation counts and logging." OFF)
+option(ENABLE_BUILTIN_COUNTS "Compile builtin invocation counters and the live query." OFF)
+option(ENABLE_VERB_COUNTS "Compile verb invocation counters and the live query." OFF)
+option(ENABLE_DIAGNOSTIC_LOGS "Write activation traces and enabled count snapshots to disk." OFF)
 option(ENABLE_BENCHMARK "Compile benchmark_call and interpreter accounting." OFF)
 option(ONLY_32_BITS "Use 32-bit integers instead of 64-bit." OFF)
 option(USE_JEMALLOC "Use jemalloc (if available) for memory allocation." OFF)
@@ -285,7 +286,7 @@ set(src_SERVER
     ${src_CXXSRCS})
 
 add_executable(moo ${src_SERVER})
-if(ENABLE_VERB_COUNTS OR ENABLE_BUILTIN_COUNTS)
+if(ENABLE_DIAGNOSTIC_LOGS AND (ENABLE_VERB_COUNTS OR ENABLE_BUILTIN_COUNTS))
     target_sources(moo PRIVATE src/count_changes.cc)
 endif()
 if(ENABLE_BENCHMARK)

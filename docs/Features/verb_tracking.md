@@ -1,6 +1,7 @@
 # Verb tracking
 
-Starting the server with `-l sindome-dev.log` creates three append-only files:
+With `ENABLE_VERB_COUNTS=ON` and `ENABLE_DIAGNOSTIC_LOGS=ON`, starting
+with `-l sindome-dev.log` produces these append-only files:
 
 | File | Contents |
 | --- | --- |
@@ -31,6 +32,8 @@ Example:
 | `window_seconds` | Publication interval, currently 30 seconds; this is not a count delta window. |
 | `mode` | Always `"cumulative"`. |
 | `counts` | Up to 50 receiver/name keys mapped to invocation counts since startup or the last reset. |
+| `changes` | Calls since the previous comparable snapshot, or null when a key has no comparable total. |
+| `session`, `generation` | Process run token and verb-count reset generation. |
 
 Keys combine the receiver object number with the resolved verb's complete name
 string, including aliases. The receiver can differ from the defining object.
@@ -60,22 +63,26 @@ From a wizard evaluation command:
 ```
 
 The builtin takes no arguments, returns `0`, and raises `E_PERM` for non-wizards.
-It clears the in-memory counters and immediately appends a snapshot with an empty
-`counts` object. The normal 30-second publication schedule continues. Subsequent
+It clears the in-memory counters and, with diagnostic files enabled, immediately
+appends a snapshot with an empty `counts` object. The normal 30-second publication schedule continues. Subsequent
 snapshots reflect only calls entered after the reset, including calls made by
 tasks that were already running. Finishing a pre-reset activation does not
 restore its old count.
 
 The reset preserves earlier snapshots and trace events. Truncating the file alone
 does not reset in-memory totals. Restarting the process resets counters too, but
-appends to any existing log files. Snapshots currently have no process/session ID,
-reset timestamp, or generation number; they cannot by themselves distinguish a
-restart from a manual reset. Counts are not stored in database checkpoints and
-there is no builtin to query them directly.
+appends to any existing log files when diagnostic files are enabled. The
+snapshot's `session` identifies the process run, and `generation` advances
+on reset. The `changes` field compares the totals against the preceding
+comparable snapshot. Counts are not stored in database checkpoints.
+
+Wizards can call `verb_call_counts([limit])` for the highest live totals, even
+when diagnostic files are disabled. The optional limit defaults to 50.
+See [Development benchmarking](development_benchmarking.md#live-count-queries).
 
 ## Trace events
 
-By default, activations with no parent span are traced. Set
+With `ENABLE_DIAGNOSTIC_LOGS=ON`, activations with no parent span are traced. Set
 `TOAST_TRACE_FULL_CALLS=1` before starting the server to include nested activations
 and eval frames. This can produce substantially more data. The flag does not
 change invocation counting.

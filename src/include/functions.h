@@ -98,7 +98,11 @@ extern void register_bi_func_cleanup(unsigned, void (*)(void *));
 extern void free_bi_func_data(void *, unsigned);
 #endif // ENABLE_BENCHMARK
 
-#ifdef ENABLE_BUILTIN_COUNTS
+#if defined(ENABLE_VERB_COUNTS) || defined(ENABLE_BUILTIN_COUNTS)
+extern Var invocation_count_value(uint64_t count);
+#endif
+
+#if defined(ENABLE_BUILTIN_COUNTS) && defined(ENABLE_DIAGNOSTIC_LOGS)
 extern void flush_builtin_counts_snapshot();
 #endif
 

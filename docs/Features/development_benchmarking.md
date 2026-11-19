@@ -4,38 +4,39 @@ These diagnostics help investigate a development server. They are independent:
 
 | Feature | Control | Default | Output |
 | --- | --- | --- | --- |
-| Builtin invocation counts | CMake `ENABLE_BUILTIN_COUNTS` | `OFF` | One replacing cumulative JSON snapshot every 15 seconds |
-| Aggregate verb counts | CMake `ENABLE_VERB_COUNTS` | `OFF` | Top 50 cumulative invocation counts in JSONL |
+| Builtin invocation counts | CMake `ENABLE_BUILTIN_COUNTS` | `OFF` | Wizard-only `builtin_call_counts()` map |
+| Aggregate verb counts | CMake `ENABLE_VERB_COUNTS` | `OFF` | Wizard-only `verb_call_counts()` list |
 | Per-call benchmarking | CMake `ENABLE_BENCHMARK` | `OFF` | Wizard-only `benchmark_call()` result map |
-| Activation tracing | Existing runtime `TOAST_TRACE_FULL_CALLS` environment variable | Root activations only | Activation events in JSONL |
+| Diagnostic files | CMake `ENABLE_DIAGNOSTIC_LOGS` | `OFF` | Activation trace and snapshots for enabled counters |
 
-All three CMake switches default to OFF. Earlier versions of this development branch
-compiled counts and benchmarking unconditionally. Reconfigure explicitly with
-`ON` to retain them. There is no trace compile switch in this branch: turning
-all three switches off preserves existing tracing. `TOAST_TRACE_FULL_CALLS=1`,
-`true`, or `yes` enables nested activation events too; other values or an unset
-variable retain root-only tracing. Set this environment variable before starting
-the process; it is cached on first use.
+All four switches default to OFF. Enable diagnostic files explicitly to keep
+writing the former `.trace`, `.verb_counts`, and `.builtin_counts` files. Existing
+files are left alone when their output is disabled. Ordinary server logging
+still uses stderr or the file passed to `-l`.
+
+With diagnostic files enabled, tracing records root activations by default.
+Set `TOAST_TRACE_FULL_CALLS=1` (also accepts `true` or `yes`) before startup to
+include nested activations and eval frames.
 
 ## Build combinations
 
 From the repository root, use separate build directories:
 
 ```bash
-# Neither optional feature (also the defaults in a fresh build directory).
-cmake -S . -B build-minimal -DCMAKE_BUILD_TYPE=Release \
-  -DENABLE_VERB_COUNTS=OFF -DENABLE_BENCHMARK=OFF
+# All diagnostics disabled in a fresh build directory.
+cmake -S . -B build-minimal -DCMAKE_BUILD_TYPE=Release
 cmake --build build-minimal -j3
 
-# Both features.
-cmake -S . -B build-diagnostics -DCMAKE_BUILD_TYPE=Release \
-  -DENABLE_VERB_COUNTS=ON -DENABLE_BENCHMARK=ON
-cmake --build build-diagnostics -j3
-
-# Counts only.
+# Both counters and live queries, with no diagnostic file output.
 cmake -S . -B build-counts -DCMAKE_BUILD_TYPE=Release \
-  -DENABLE_VERB_COUNTS=ON -DENABLE_BENCHMARK=OFF
+  -DENABLE_VERB_COUNTS=ON -DENABLE_BUILTIN_COUNTS=ON -DENABLE_DIAGNOSTIC_LOGS=OFF
 cmake --build build-counts -j3
+
+# Counters, file output, and single-call benchmarking.
+cmake -S . -B build-diagnostics -DCMAKE_BUILD_TYPE=Release \
+  -DENABLE_VERB_COUNTS=ON -DENABLE_BUILTIN_COUNTS=ON \
+  -DENABLE_BENCHMARK=ON -DENABLE_DIAGNOSTIC_LOGS=ON
+cmake --build build-diagnostics -j3
 
 # Benchmarking only.
 cmake -S . -B build-benchmark -DCMAKE_BUILD_TYPE=Release \
@@ -47,25 +48,49 @@ Each executable is `<build-directory>/moo`. CMake caches settings; pass explicit
 values when reusing a directory. Build separately from any running executable.
 No installation or service restart is part of these commands.
 
-With counts OFF, counter storage, invocation increments, snapshot timer, and
-count-log handling are compiled out. No `.verb_counts` file is opened or
-created; an older existing file is left alone. There is no count-query builtin. With counts ON, the locally retained wizard-only
-`clear_verb_counts()` resets verb totals and immediately appends an empty snapshot;
-it does not reset builtin counts.
+## Live count queries
+
+```moo
+; return builtin_call_counts()["length"];
+; return verb_call_counts();
+; return verb_call_counts(200);
+```
+
+Both queries require wizard permissions. They read
+current process totals regardless of whether file output is enabled. Each query
+is available only if its corresponding counter is compiled in.
+
+- `builtin_call_counts()` returns a map keyed by registered builtin name,
+  including zero counts. The dispatcher counts the query itself before it
+  reads the totals.
+- `verb_call_counts([limit])` returns up to `limit` observed verbs as a list of
+  `{key, total}` pairs, highest count first. Ties are ordered lexically by key.
+  The optional integer limit defaults to 50. Zero returns an empty list and
+  a negative limit raises `E_INVARG`. The keys use the same receiver and full
+  verb name format as the file. Pairs preserve case-distinct keys.
+- Totals are MOO integers when representable and exact decimal strings
+  above the maximum MOO integer. Counters saturate at the unsigned 64-bit
+  maximum. The live queries report totals without calculating file deltas.
+- `clear_verb_counts()` resets the verb totals. It also appends an empty
+  snapshot when file output is enabled.
+- `clear_builtin_count()` resets all builtin totals to zero and returns `0`.
+  It requires wizard permissions and takes no arguments. With file output
+  enabled, it immediately replaces the snapshot with zero counts. The reset
+  clears its own dispatch attempt. Builtin totals also reset on restart.
 
 With benchmarking OFF, `benchmark_call` is absent from builtin registration.
 The accounting implementation is not linked, and tick, dispatch, suspension,
 activation, clock, and benchmark-specific continuation cleanup hooks are
 compiled out. Runtime VM/activation benchmark fields are absent too. Existing
-non-benchmark timing, tracing, and task limits remain.
+non-benchmark timing and task limits remain.
 
 ## Builtin invocation snapshots
 
-Enable `ENABLE_BUILTIN_COUNTS` independently of verb counts and benchmarking:
+Builtin snapshots require both `ENABLE_BUILTIN_COUNTS` and `ENABLE_DIAGNOSTIC_LOGS`:
 
 ```bash
 cmake -S . -B build-builtin-counts -DCMAKE_BUILD_TYPE=Release \
-  -DENABLE_BUILTIN_COUNTS=ON -DENABLE_VERB_COUNTS=OFF -DENABLE_BENCHMARK=OFF
+  -DENABLE_BUILTIN_COUNTS=ON -DENABLE_DIAGNOSTIC_LOGS=ON
 cmake --build build-builtin-counts -j3
 ```
 
@@ -83,9 +108,8 @@ Each file contains one complete JSON object followed by a newline:
 
 The example abbreviates `counts`: the real snapshot includes every registered
 builtin, including zeros, keyed by its canonical registered name. Values are
-invocation attempts since this process started, not calls per interval, timings,
-or VM ticks. They reset on restart, are not saved in the database, and saturate
-at the unsigned 64-bit maximum rather than wrapping. `ts` is the write-attempt
+invocation attempts since startup or the last `clear_builtin_count()` reset.
+They are held in process memory and saturate at the unsigned 64-bit maximum. `ts` is the write-attempt
 Unix timestamp; `pid` identifies the process. A disabled build leaves any old
 snapshot file untouched; an old timestamp can therefore indicate stale data.
 
@@ -109,10 +133,10 @@ Atomic visibility is provided, not an fsync/power-loss durability guarantee.
 Use a distinct log base for each process so they do not share a snapshot path.
 
 The file has at most one entry per registered builtin (currently at most 256),
-so size does not grow with history. Only integer digit widths can grow. There is
-no new MOO builtin or runtime reset command. When the option is OFF, counters,
-dispatch increments, snapshot timer, and snapshot writer are compiled out.
-Existing `.verb_counts` append snapshots and `.trace` behavior are unchanged.
+so the file size grows only as counter values gain digits. Turning off
+`ENABLE_BUILTIN_COUNTS` compiles out the counters, query, reset, and periodic
+snapshots. Turning off only `ENABLE_DIAGNOSTIC_LOGS` leaves the counters and
+MOO builtins available without the snapshot timer or writer.
 
 ```bash
 jq '.counts | to_entries | sort_by(.value) | reverse' development.log.builtin_counts
@@ -144,9 +168,10 @@ full-history scan. Builtins still replace their file about every 15 seconds;
 verbs still append a top-50 snapshot about every 30 seconds. A failed write does
 not advance the on-disk baseline, so the next successful change spans that gap.
 
-A `session` token distinguishes process runs, and `generation` advances when
-`clear_verb_counts()` resets verb totals. Missing files, old-format snapshots,
-malformed/unreadable/oversized records, new sessions, different reset generations,
+A `session` token distinguishes process runs. Each file’s `generation` advances
+when its totals are reset by `clear_verb_counts()` or `clear_builtin_count()`.
+Missing files, old-format snapshots, malformed/unreadable/oversized records,
+new sessions, different reset generations,
 missing keys, and decreasing totals produce JSON `null` for the affected change.
 In particular, a verb newly entering the top 50 may have prior calls that were
 not present in the preceding snapshot, so its change is unknown rather than
@@ -214,11 +239,12 @@ Paths are relative to the launch directory. The first database is the input;
 the second is the checkpoint/shutdown output. With `-l development.log`:
 
 - `development.log`: normal server log.
-- `development.log.verb_counts`: count snapshots, only when counts are compiled ON.
-- `development.log.trace`: activation trace events, independent of all three switches.
+- `development.log.verb_counts`: count snapshots when verb counting and diagnostic files are enabled.
+- `development.log.builtin_counts`: latest snapshot when builtin counting and diagnostic files are enabled.
+- `development.log.trace`: activation trace events when diagnostic files are enabled.
 
 Without `-l`, normal logging uses stderr; the auxiliary filenames use
-`toaststunt.log.verb_counts` and `toaststunt.log.trace`. Auxiliary files append.
+the base `toaststunt.log`. Verb snapshots and traces append.
 
 Count JSONL records have `ts` (Unix seconds), `window_seconds: 30`,
 `mode: "cumulative"`, and a `counts` object mapping `#receiver:full verb names`
@@ -230,7 +256,7 @@ call does not count it again. The timer requests a flush approximately every
 Despite the `window_seconds` field, totals are cumulative since process start or the last `clear_verb_counts()` reset,
 not per-window rates. Do not sum successive snapshots. Missing entries can
 simply be outside the top 50. Restart resets in-memory counts, but appended old
-snapshots remain; the records do not carry a process ID. There is no explicit
+snapshots remain. The session token distinguishes runs. There is no explicit
 final count snapshot on shutdown, so the last partial interval may be absent.
 
 Read the latest snapshot without changing the server:
@@ -277,19 +303,21 @@ these new OFF configurations or evidence of a general speedup.
 Use only synthetic tests, which launch their own temporary loopback servers:
 
 ```bash
-python3 test/diagnostic_options.py /absolute/path/to/moo ON ON
-# Pass the corresponding ON/OFF pair for each of the other three binaries.
+python3 test/diagnostic_options.py /absolute/path/to/moo ON ON ON ON
+# Arguments after the executable are verb counts, benchmark, builtin counts, and diagnostic files.
 BENCHMARK_OLD_BINARY=/absolute/path/to/benchmark-OFF/moo \
   python3 test/benchmark_integration.py /absolute/path/to/benchmark-ON/moo
 ```
 
-The option checks verify builtin presence/absence, count output (including a
-real timer flush), and both trace modes. The profiler suite covers nested calls,
+The option checks cover live counts, wizard permissions, verb ranking and limits,
+and file output through a real timer interval in both trace modes. The profiler
+suite covers nested calls,
 suspension, kill/error paths, checkpoint/restart, and rejection by an OFF binary.
 
-### Validated build matrix
+### Earlier build matrix
 
-The four Release combinations were built and checked on Linux:
+Before the live queries and diagnostic-file flag, four Release combinations
+were built and checked on Linux:
 
 | Counts | Benchmark | Option/log/trace checks | Eval + task-local regressions | Profiler suite |
 | --- | --- | --- | --- | --- |
