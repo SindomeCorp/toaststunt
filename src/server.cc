@@ -591,6 +591,8 @@ static uint64_t verb_counts_generation = 0;
 static void
 flush_verb_counts_log()
 {
+    if (!prepare_verb_counts_log())
+        return;
     const auto snapshot = snapshot_verb_invocation_counts(DEFAULT_VERB_COUNT_LIMIT);
 
     Stream *line = new_stream(512 + snapshot.size() * 32);
@@ -626,15 +628,9 @@ bf_verb_call_counts(Var arglist, Byte next, void *vdata, Objid progr)
     if (limit < 0)
         return make_error_pack(E_INVARG);
 
-    const auto snapshot = snapshot_verb_invocation_counts(limit);
-    Var counts = new_list(snapshot.size());
-    for (size_t i = 0; i < snapshot.size(); ++i) {
-        const auto &entry = snapshot[i];
-        Var row = new_list(2);
-        row.v.list[1] = str_dup_to_var(entry.first.c_str());
-        row.v.list[2] = invocation_count_value(entry.second);
-        counts.v.list[i + 1] = row;
-    }
+    Var counts;
+    if (!verb_invocation_count_list(limit, counts))
+        return make_space_pack();
     return make_var_pack(counts);
 }
 

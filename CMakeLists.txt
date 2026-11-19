@@ -328,7 +328,9 @@ if(SQLITE3_FOUND)
     target_link_libraries(moo ${SQLITE3_LIBRARIES})
 endif()
 
-if (PQXX_FOUND)
+if (PQXX_FOUND AND NOT CMAKE_DISABLE_FIND_PACKAGE_PQXX)
+    # FindPQXX caches discovery, but SQL_FOUND is recomputed on every configure.
+    set (SQL_FOUND TRUE)
     set (POSTGRESQL_FOUND TRUE)
     include_directories(${PQXX_INCLUDE_DIRECTORIES})
     target_link_libraries(moo ${PQXX_LIBRARIES})

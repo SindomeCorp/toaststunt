@@ -388,15 +388,6 @@ bf_crypt(Var arglist, Byte next, void *vdata, Objid progr)
 #define ENDTRY_STREAM disable_stream_exceptions()
 
 static package
-make_space_pack()
-{
-    if (server_flag_option_cached(SVO_MAX_CONCAT_CATCHABLE))
-        return make_error_pack(E_QUOTA);
-    else
-        return make_abort_pack(ABORT_SECONDS);
-}
-
-static package
 bf_string_hash(Var arglist, Byte next, void *vdata, Objid progr)
 {
     Var r;

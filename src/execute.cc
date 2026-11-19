@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <mutex>
 #include <unordered_map>
+#include <string_view>
 #include <vector>
 #include <string.h>
 #include <stdarg.h>
@@ -125,23 +126,79 @@ note_resolved_verb_invocation(Objid recv, const char *verbname)
         ++count;
 }
 
+// The caller holds the counter lock while using these views.
+static std::vector<std::pair<std::string_view, uint64_t>>
+ranked_verb_counts(size_t size)
+{
+    std::vector<std::pair<std::string_view, uint64_t>> ranked;
+    if (size == 0)
+        return ranked;
+
+    auto higher_count = [](const auto &a, const auto &b) {
+        if (a.second != b.second)
+            return a.second > b.second;
+        return a.first < b.first;
+    };
+    ranked.reserve(size);
+    auto it = verb_invocation_counts.begin();
+    while (ranked.size() < size)
+        ranked.emplace_back(*it++);
+
+    // Keep the worst selected row at the front and borrow keys only from the map.
+    std::make_heap(ranked.begin(), ranked.end(), higher_count);
+    for (; it != verb_invocation_counts.end(); ++it) {
+        if (higher_count(*it, ranked.front())) {
+            std::pop_heap(ranked.begin(), ranked.end(), higher_count);
+            ranked.back() = *it;
+            std::push_heap(ranked.begin(), ranked.end(), higher_count);
+        }
+    }
+    std::sort_heap(ranked.begin(), ranked.end(), higher_count);
+    return ranked;
+}
+
+#ifdef ENABLE_DIAGNOSTIC_LOGS
 std::vector<std::pair<std::string, uint64_t>>
 snapshot_verb_invocation_counts(uint64_t limit)
 {
-    if (limit == 0)
-        return {};
-
     std::lock_guard<std::mutex> lock(verb_invocation_counts_mutex);
-    const auto size = std::min<uint64_t>(limit, verb_invocation_counts.size());
-    std::vector<std::pair<std::string, uint64_t>> snapshot(size);
-    std::partial_sort_copy(verb_invocation_counts.begin(), verb_invocation_counts.end(),
-                           snapshot.begin(), snapshot.end(),
-                           [](const auto &a, const auto &b) {
-                               if (a.second != b.second)
-                                   return a.second > b.second;
-                               return a.first < b.first;
-                           });
-    return snapshot;
+    const auto ranked = ranked_verb_counts(std::min<uint64_t>(limit, verb_invocation_counts.size()));
+    return {ranked.begin(), ranked.end()};
+}
+#endif
+
+bool
+verb_invocation_count_list(uint64_t limit, Var &result)
+{
+    std::lock_guard<std::mutex> lock(verb_invocation_counts_mutex);
+    const size_t size = std::min<uint64_t>(limit, verb_invocation_counts.size());
+    const size_t byte_limit = server_int_option_cached(SVO_MAX_LIST_VALUE_BYTES);
+    // value_bytes() charges a Var and a length slot per list. Each row
+    // additionally contains two Vars and at least the key's terminating NUL.
+    constexpr size_t list_overhead = 2 * sizeof(Var);
+    constexpr size_t minimum_row = list_overhead + 2 * sizeof(Var) + 1;
+    if (byte_limit < list_overhead || size > (byte_limit - list_overhead) / minimum_row)
+        return false;
+
+    const auto ranked = ranked_verb_counts(size);
+    size_t remaining = byte_limit - list_overhead - size * minimum_row;
+    for (const auto &entry : ranked) {
+        size_t extra = entry.first.size();
+        if (entry.second > static_cast<uint64_t>(MAXINT))
+            extra += std::to_string(entry.second).size() + 1; // decimal string count
+        if (extra > remaining)
+            return false;
+        remaining -= extra;
+    }
+
+    result = new_list(size);
+    for (size_t i = 0; i < size; ++i) {
+        Var row = new_list(2);
+        row.v.list[1] = str_dup_to_var(ranked[i].first.data());
+        row.v.list[2] = invocation_count_value(ranked[i].second);
+        result.v.list[i + 1] = row;
+    }
+    return true;
 }
 
 void

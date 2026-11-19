@@ -162,7 +162,10 @@ extern bool get_thread_mode();
 extern void set_thread_mode(bool mode);
 #ifdef ENABLE_VERB_COUNTS
 constexpr Num DEFAULT_VERB_COUNT_LIMIT = 50;
+#ifdef ENABLE_DIAGNOSTIC_LOGS
 extern std::vector<std::pair<std::string, uint64_t>> snapshot_verb_invocation_counts(uint64_t limit);
+#endif
+extern bool verb_invocation_count_list(uint64_t limit, Var &result);
 extern void clear_verb_invocation_counts();
 #endif
 

@@ -16,6 +16,7 @@
  *****************************************************************************/
 
 #include <errno.h>
+#include <sys/stat.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -166,7 +167,7 @@ open_verb_counts_log_file()
     if (!verb_counts_log_file_name)
         return 0;
 
-    verb_counts_log_file = fopen(verb_counts_log_file_name, "a");
+    verb_counts_log_file = fopen(verb_counts_log_file_name, "a+");
     return verb_counts_log_file ? 1 : 0;
 }
 
@@ -185,7 +186,7 @@ reopen_verb_counts_log_file()
     if (!verb_counts_log_file_name)
         return;
 
-    FILE *f = fopen(verb_counts_log_file_name, "a");
+    FILE *f = fopen(verb_counts_log_file_name, "a+");
     if (!f) {
         log_perror("Error reopening verb counts log file");
         return;
@@ -195,15 +196,55 @@ reopen_verb_counts_log_file()
     verb_counts_log_file = f;
 }
 
+// Drop only the unfinished record. Keep all previously published JSON lines.
+static bool
+repair_verb_counts_tail(int fd)
+{
+    struct stat info;
+    if (fstat(fd, &info) < 0)
+        return false;
+
+    off_t end = info.st_size;
+    char block[4096];
+    while (end > 0) {
+        const size_t length = end < (off_t)sizeof(block) ? (size_t)end : sizeof(block);
+        end -= length;
+        const ssize_t n = pread(fd, block, length, end);
+        if (n != (ssize_t)length) {
+            if (n >= 0)
+                errno = EIO;
+            return false;
+        }
+        for (size_t i = length; i > 0; --i) {
+            if (block[i - 1] == '\n') {
+                off_t complete = end + i;
+                return complete == info.st_size || ftruncate(fd, complete) == 0;
+            }
+        }
+    }
+    return info.st_size == 0 || ftruncate(fd, 0) == 0;
+}
+
+bool
+prepare_verb_counts_log()
+{
+    if (!verb_counts_log_file)
+        return false;
+    if (repair_verb_counts_tail(fileno(verb_counts_log_file)))
+        return true;
+    log_perror("VERB_COUNTS: recovering snapshot log");
+    return false;
+}
+
 void
 verb_counts_log_emit(const char *line)
 {
-    if (!verb_counts_log_file || !line)
-        return;
-
-    fputs(line, verb_counts_log_file);
-    fputc('\n', verb_counts_log_file);
-    fflush(verb_counts_log_file);
+    if (fputs(line, verb_counts_log_file) == EOF ||
+        fputc('\n', verb_counts_log_file) == EOF ||
+        fflush(verb_counts_log_file) == EOF) {
+        log_perror("VERB_COUNTS: appending snapshot");
+        clearerr(verb_counts_log_file);
+    }
 }
 
 #endif // ENABLE_VERB_COUNTS

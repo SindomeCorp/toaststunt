@@ -38,6 +38,7 @@ const char* get_verb_counts_log_file_name();
 int open_verb_counts_log_file();
 void close_verb_counts_log_file();
 void reopen_verb_counts_log_file();
+bool prepare_verb_counts_log();
 void verb_counts_log_emit(const char *line);
 
 #endif // ENABLE_VERB_COUNTS

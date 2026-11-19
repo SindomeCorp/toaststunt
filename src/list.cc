@@ -620,15 +620,6 @@ strget(Var str, int i)
 #define TRY_STREAM enable_stream_exceptions()
 #define ENDTRY_STREAM disable_stream_exceptions()
 
-static package
-make_space_pack()
-{
-    if (server_flag_option_cached(SVO_MAX_CONCAT_CATCHABLE))
-        return make_error_pack(E_QUOTA);
-    else
-        return make_abort_pack(ABORT_SECONDS);
-}
-
 /**** built in functions ****/
 
 static package

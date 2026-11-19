@@ -499,6 +499,14 @@ make_x_not_found_pack(enum error err, const char *msg, Objid the_object)
 }
 
 package
+make_space_pack()
+{
+    if (server_flag_option_cached(SVO_MAX_CONCAT_CATCHABLE))
+        return make_error_pack(E_QUOTA);
+    return make_abort_pack(ABORT_SECONDS);
+}
+
+package
 make_var_pack(Var v)
 {
     package p;

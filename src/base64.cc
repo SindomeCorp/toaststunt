@@ -37,15 +37,6 @@
 #include "utils.h"
 #include "server.h"
 
-static package
-make_space_pack()
-{
-    if (server_flag_option_cached(SVO_MAX_CONCAT_CATCHABLE))
-        return make_error_pack(E_QUOTA);
-    else
-        return make_abort_pack(ABORT_SECONDS);
-}
-
 static const unsigned char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

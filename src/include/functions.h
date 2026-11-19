@@ -60,6 +60,7 @@ enum abort_reason {
 };
 
 package make_abort_pack(enum abort_reason reason);
+package make_space_pack();
 package make_error_pack(enum error err);
 package make_raise_pack(enum error err, const char *msg, Var value);
 package make_x_not_found_pack(enum error err, const char *msg, Objid the_object);

@@ -37,4 +37,4 @@ then run:
 
 This test resets the test server's counters and waits up to 35 seconds for the
 next periodic snapshot. Without the environment variable, snapshot verification
-is omitted and builtin permission/argument checks still run.
+is omitted. The builtin permission and argument checks run when verb counting is enabled.

@@ -3,6 +3,12 @@ require 'json'
 
 class TestVerbCounts < Test::Unit::TestCase
 
+  def setup
+    run_test_as('wizard') do
+      omit('Verb counting is disabled in this build') unless has_function?('clear_verb_counts')
+    end
+  end
+
   def test_that_only_wizards_can_clear_verb_counts
     run_test_as('programmer') do
       assert_equal E_PERM, simplify(command('; return clear_verb_counts();'))

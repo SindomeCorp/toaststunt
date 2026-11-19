@@ -17,7 +17,7 @@ def evaluate(code):
 def wait_snapshot(key, total):
     deadline = time.monotonic() + 38
     while time.monotonic() < deadline:
-        lines = path.read_text().splitlines()
+        lines = path.read_text().split('\n')[:-1]
         if lines:
             record = json.loads(lines[-1])
             if record['counts'].get(key) == total:
@@ -32,7 +32,11 @@ try:
     first = wait_snapshot(key, 1000)
     assert first['changes'][key] is None
     assert evaluate(f'for i in [1..50]; {obj}:change_probe(); endfor; return 1;') == '{1, 1}'
+    # An interrupted append must preserve the last complete baseline.
+    with path.open('a') as output:
+        output.write('{"ts":' + ' ' * 8192)
     second = wait_snapshot(key, 1050)
+    assert all(json.loads(line) for line in path.read_text().splitlines())
     assert second['changes'][key] == 50
     assert second['session'] == first['session']
     assert second['generation'] == first['generation']

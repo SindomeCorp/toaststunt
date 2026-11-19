@@ -65,7 +65,7 @@ A non-wizard receives `E_PERM`.
 
 | Builtin | Result |
 | --- | --- |
-| `verb_call_counts([limit])` | Up to `limit` pairs of `{key, total}`, highest count first, with lexical key order for ties. The optional integer defaults to 50. Zero returns `{}` and a negative limit raises `E_INVARG`. |
+| `verb_call_counts([limit])` | Up to `limit` pairs of `{key, total}`, highest count first, with lexical key order for ties. The optional integer defaults to 50. Zero returns `{}` and a negative limit raises `E_INVARG`. The result must fit `max_list_value_bytes`. An oversized query raises `E_QUOTA` when `max_concat_catchable` is enabled and aborts the task otherwise. |
 | `builtin_call_counts()` | A map from registered builtin name to total. Includes zero counts and the query's own dispatch attempt. |
 | `clear_verb_counts()` | Resets verb totals and returns `0`. With disk output enabled, appends an empty verb snapshot immediately. |
 | `clear_builtin_count()` | Zeros all builtin totals and returns `0`. With disk output enabled, immediately replaces the builtin snapshot with zeros. |
@@ -140,6 +140,10 @@ base is `toaststunt.log` and ordinary logging goes to stderr.
 | `development.log.builtin_counts` | One JSON record, replaced atomically about every 15 seconds. Includes all registered builtins. |
 | `development.log.trace` | Append-only JSONL. Records root activations as they are freed. |
 
+The server needs read and write access to the verb snapshot file. After an
+interrupted write, it removes the unfinished final line before appending the
+next snapshot. Write failures appear in the ordinary server log.
+
 Each count snapshot includes `counts` and `changes`. For example, a total of
 1,050 and a change of 50 means 50 calls since the preceding comparable
 snapshot. Use `changes` to see recent activity and `counts` for cumulative
@@ -203,7 +207,9 @@ player, task ID, and span IDs. They include elapsed duration as well as outcome
 and error fields. Root-only mode is useful for identifying top-level handlers.
 To include nested calls and eval frames, start the disk-enabled binary with
 `TOAST_TRACE_FULL_CALLS=1` in its environment. Use the trace and parent span
-IDs to follow the reported call path within a run.
+IDs to follow calls within a task. A fork inherits the parent’s span IDs, so
+two tasks can report the same span. Group records by `task_id` as well as
+`trace_id` when following a call path.
 
 ```bash
 tail -n 0 -F development.log.trace |

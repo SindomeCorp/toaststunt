@@ -163,8 +163,9 @@ comparable snapshot containing 1,000 calls. Changes are interval totals, not
 calls per second. An unchanged counter has change `0`.
 
 Before each write, the server reads the latest complete snapshot from the same
-file. It reads at most the last 1 MiB, so the verb append log does not require a
-full-history scan. Builtins still replace their file about every 15 seconds;
+file. To recover an interrupted verb append, it scans back to the preceding
+newline and removes the unfinished record. The subsequent baseline lookup
+reads at most the last 1 MiB. Builtins still replace their file about every 15 seconds;
 verbs still append a top-50 snapshot about every 30 seconds. A failed write does
 not advance the on-disk baseline, so the next successful change spans that gap.
 

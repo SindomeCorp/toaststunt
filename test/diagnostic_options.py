@@ -93,6 +93,18 @@ for full_trace in (False, True):
                     f'&& equal(verb_call_counts(3), {{{{"{obj}:counter_probe_60",3}},'
                     f'{{"{obj}:counter_probe_1",1}},{{"{obj}:counter_probe_10",1}}}});'
                 ) == '{1, 1}', 'verb query limits and ordering'
+                assert evaluate(
+                    'size=value_bytes(verb_call_counts(50)); '
+                    'add_property($server_options,"max_list_value_bytes",size,{player,""}); '
+                    'add_property($server_options,"max_concat_catchable",1,{player,""}); '
+                    'load_server_options(); exact=length(verb_call_counts(50)); '
+                    '$server_options.max_list_value_bytes=size-1; load_server_options(); '
+                    "over=`verb_call_counts(50) ! E_QUOTA => 1'; "
+                    'smaller=length(verb_call_counts(49)); '
+                    'delete_property($server_options,"max_list_value_bytes"); '
+                    'delete_property($server_options,"max_concat_catchable"); load_server_options(); '
+                    'return {exact,over,smaller};'
+                ) == '{1, {50, 1, 49}}', 'verb query byte limit'
                 assert 'E_INVARG' in evaluate('return verb_call_counts(-1);')
                 assert 'E_TYPE' in evaluate('return verb_call_counts("50");')
                 assert 'E_ARGS' in evaluate('return verb_call_counts(@{1,2});')
