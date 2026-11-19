@@ -6,7 +6,7 @@ Disk snapshots and activation traces are optional.
 
 ## Quick start with MOO builtins
 
-From the root of a ToastStunt checkout on `dev-verb-logs`, install the
+From the root of a ToastStunt checkout on `performance_and_benchmarking`, install the
 [normal build dependencies](docs/README.md#build-instructions) and build a separate
 Release executable with the three diagnostic APIs enabled:
 
