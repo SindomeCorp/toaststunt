@@ -9,6 +9,7 @@ ToastStunt is a network accessible, multi-user, programmable, interactive system
   * [Gentoo](#gentoo)
   * [FreeBSD](#freebsd)
   * [macOS](#macos)
+* [Performance and Benchmarking](#performance-and-benchmarking)
 * [Function Documentation](https://github.com/lisdude/toaststunt-documentation)
 * [Getting Started Guide](https://lisdude.com/moo/toaststunt_newbie.txt)
 * [ToastCore](https://github.com/lisdude/toastcore)
@@ -71,6 +72,17 @@ ToastStunt is a network accessible, multi-user, programmable, interactive system
 - [Several new built-in functions](Features/new_builtins.md)
 
 - [Many miscellaneous changes](Features/new_miscellaneous.md)
+
+## Performance and benchmarking
+
+Use `verb_call_counts()` and `builtin_call_counts()` to measure how often
+verbs and builtins are called. Use `benchmark_call()` to measure a specific
+verb call. These builtins are available to wizards from MOO when enabled at
+build time. Disk snapshots and activation traces are optional and disabled
+by default.
+
+See the [performance and benchmarking guide](../PERFORMANCE_AND_BENCHMARKING.md)
+for build flags, examples, and snapshot commands.
 
 ## Build Instructions
 ### **Debian/Ubuntu/WSL**

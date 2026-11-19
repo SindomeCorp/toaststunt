@@ -1,8 +1,10 @@
 # Performance and benchmarking
 
-Use call counts to find frequently used verbs and builtins, then use
-`benchmark_call()` to measure a specific verb. You can do both from MOO.
-Disk snapshots and activation traces are optional.
+Use `verb_call_counts()` and `builtin_call_counts()` to measure how often
+verbs and builtins are called. Use `benchmark_call()` to measure a specific
+verb call. These builtins are available to wizards from MOO when enabled at
+build time. Disk snapshots and activation traces are optional and disabled
+by default.
 
 ## Quick start with MOO builtins
 
