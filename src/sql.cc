@@ -578,6 +578,7 @@ query_callback(const Var arglist, Var *ret)
                 pool->release_connection(session);
                 session = nullptr;
                 break; // success
+#ifdef POSTGRESQL_FOUND
             } catch (const pqxx::sql_error &e) {
                 if (session) { pool->release_connection(session); session = nullptr; }
                 // SQL syntax/constraint/etc. — do not retry; bubble up.
@@ -591,6 +592,7 @@ query_callback(const Var arglist, Var *ret)
                 if (tries >= 3) throw; // bounded retry
                 DLOG("Retrying after broken_connection (attempt %d)\n", tries);
                 continue; // get a fresh connection
+#endif
             } catch (const std::runtime_error &) {
                 if (session) {
                     pool->release_connection(session);
@@ -601,10 +603,6 @@ query_callback(const Var arglist, Var *ret)
                 continue;
             }
         }
-    } catch (const pqxx::broken_connection &e) {
-        *ret = error_to_var_from_exception(e);
-    } catch (const pqxx::sql_error &e) {
-        *ret = error_to_var_from_exception(e);
     } catch (const std::exception &e) {
         *ret = error_to_var_from_exception(e);
     } catch(...) {
