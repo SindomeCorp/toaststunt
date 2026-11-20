@@ -20,6 +20,7 @@
 #include "list.h"
 #include "storage.h"
 #include "utils.h"
+#include "waif.h"
 
 struct prop_data {
     Var r;
@@ -341,6 +342,13 @@ bf_property_exists(Var arglist, Byte next, void *vdata, Objid progr)
     if (arglist.v.list[0].v.num == 3)
         direct = is_true(arglist.v.list[3]);
 
+    if (obj.type == TYPE_WAIF) {
+        int exists;
+        enum error e = waif_property_exists(obj.v.waif, pname, direct, progr, &exists);
+        free_var(arglist);
+        return e == E_NONE ? make_var_pack(Var::new_int(exists)) : make_error_pack(e);
+    }
+
     if (!obj.is_object()) {
         free_var(arglist);
         return make_error_pack(E_TYPE);
@@ -351,15 +359,17 @@ bf_property_exists(Var arglist, Byte next, void *vdata, Objid progr)
     }
 
     h = db_find_property(obj, pname, nullptr);
-    free_var(arglist);
 
     if (!h.ptr)
         r = Var::new_int(0);
-    else if (!db_is_property_built_in(h) && !db_property_allows(h, progr, PF_READ))
+    else if (!db_is_property_built_in(h) && !db_property_allows(h, progr, PF_READ)) {
+        free_var(arglist);
         return make_error_pack(E_PERM);
+    }
     else
         r = Var::new_int(!direct || db_is_property_defined_on(h, obj));
 
+    free_var(arglist);
     return make_var_pack(r);
 }
 
